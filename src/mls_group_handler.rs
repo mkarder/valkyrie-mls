@@ -158,22 +158,25 @@ impl MlsSwarmLogic for MlsEngine {
                 Error::msg("Error processing message.")
             })?;
 
-
-        match message_in.extract() {
+      match message_in.extract() {
             MlsMessageBodyIn::PublicMessage(msg) => {
                 let processed_message = self
                     .group
                     .process_message(&self.provider, msg)
-                    .expect("Error processing message");
+                    .expect("[MlsEngine] Error processing message");
                 match processed_message.into_content() {
                     ProcessedMessageContent::ApplicationMessage(payload) => {
                         let content_bytes = payload.into_bytes();
+                        let preview = std::str::from_utf8(&content_bytes)
+                            .map(|text| &text[..text.len().min(50)])
+                            .unwrap_or("<non-UTF8 data>");
+                        log::info!("[MlsEngine] Decrypted application message: {}", preview);
                         Ok(content_bytes)
                     }
                     ProcessedMessageContent::ExternalJoinProposalMessage(_)
                     | ProcessedMessageContent::StagedCommitMessage(_)
                     | ProcessedMessageContent::ProposalMessage(_) => Err(Error::msg(
-                        "Expected ApplicationMessage from Network. Received Proposal or Commit.",
+                        "[MlsEngine] Expected ApplicationMessage from Network. Received Proposal or Commit.",
                     )),
                 }
             }
@@ -182,39 +185,33 @@ impl MlsSwarmLogic for MlsEngine {
                     self.group
                         .process_message(&self.provider, msg)
                         .map_err(|e| {
-                            log::error!("Error processing message: {:?}", e);
-                            Error::msg("Error processing message.")
+                            log::error!("[MlsEngine] Error processing message: {:?}", e);
+                            Error::msg("[MlsEngine] Error processing message.")
                         })?;
                 match processed_message.into_content() {
                     ProcessedMessageContent::ApplicationMessage(payload) => {
                         let content_bytes = payload.into_bytes();
-
-                        // Log the decrypted message as UTF-8 if possible
-                        match std::str::from_utf8(&content_bytes) {
-                            Ok(text) => log::info!("Decrypted application message: {}", text),
-                            Err(_) => log::info!(
-                                "Decrypted application message (non-UTF8): {:?}",
-                                content_bytes
-                            ),
-                        }
-
+                        let preview = std::str::from_utf8(&content_bytes)
+                            .map(|text| &text[..text.len().min(50)])
+                            .unwrap_or("<non-UTF8 data>");
+                        log::info!("[MlsEngine] Decrypted application message: {}", preview);
                         Ok(content_bytes)
                     }
                     ProcessedMessageContent::ExternalJoinProposalMessage(_)
                     | ProcessedMessageContent::StagedCommitMessage(_)
                     | ProcessedMessageContent::ProposalMessage(_) => Err(Error::msg(
-                        "Expected ApplicationMessage from Network. Received Proposal or Commit.",
+                        "[MlsEngine] Expected ApplicationMessage from Network. Received Proposal or Commit.",
                     )),
                 }
             }
             MlsMessageBodyIn::Welcome(_) => Err(Error::msg(
-                "Expected ApplicationMessage from Network. Received Welcome.",
+                "[MlsEngine] Expected ApplicationMessage from Network. Received Welcome.",
             )),
             MlsMessageBodyIn::GroupInfo(_) => Err(Error::msg(
-                "Expected ApplicationMessage from Network. Received GroupInfo.",
+                "[MlsEngine] Expected ApplicationMessage from Network. Received GroupInfo.",
             )),
             MlsMessageBodyIn::KeyPackage(_) => Err(Error::msg(
-                "Expected ApplicationMessage from Network. Received KeyPackage.",
+                "[MlsEngine] Expected ApplicationMessage from Network. Received KeyPackage.",
             )),
         }
     }
@@ -354,8 +351,8 @@ impl MlsSwarmLogic for MlsEngine {
 
      fn handle_incoming_welcome(&mut self, welcome: Welcome) -> Result<(), Error> {
         log::debug!(
-            "Node {:?} received Welcome message",
-            self.config.node_id
+            "[MlsEngine] Node {:?} received Welcome message",
+            self.config.node_id,
         );
     
         let staged_join = StagedWelcome::new_from_welcome(
@@ -364,25 +361,25 @@ impl MlsSwarmLogic for MlsEngine {
             welcome,
             None,
         ).map_err(|e| {
-            log::error!("Error constructing staged join: {:?}", e);
+            log::error!("[MlsEngine] Error constructing staged join: {:?}", e);
             e
         })?;
     
         let sender_index = staged_join.welcome_sender_index();
         let group = staged_join.into_group(&self.provider).map_err(|e| {
-            log::error!("Error joining group from StagedWelcome: {:?}", e);
+            log::error!("[MlsEngine] Error joining group from StagedWelcome: {:?}", e);
             Error::msg("Failed to convert staged join into group")
         })?;
     
-        log::info!("Joined group with ID: {:?}", group.group_id().as_slice());
+        log::info!("[MlsEngine] Joined group with ID: {:?}", group.group_id().as_slice());
     
         let sender = group.member(sender_index).ok_or_else(|| {
-            log::error!("Sender not found in group.");
+            log::error!("[MlsEngine] Sender not found in group.");
             Error::msg("Sender not found in group.")
         })?;
     
         self.verify_credential(sender.clone(), None).map_err(|e| {
-            log::error!("Error verifying sender's credential: {:?}", e);
+            log::error!("[MlsEngine] Error verifying sender's credential: {:?}", e);
             e
         })?;
 
@@ -390,6 +387,7 @@ impl MlsSwarmLogic for MlsEngine {
         self.group = group;
 
         self.refresh_key_package()?;
+
 
         Ok(())
     }
@@ -592,24 +590,29 @@ impl MlsSwarmLogic for MlsEngine {
         unverified_credential: Credential,
         attached_key: Option<&SignaturePublicKey>,
     ) -> Result<(), Error> {
-        log::info!("Verifying incoming Credential!");
+        log::info!("[MlsEngine] Verifying incoming Credential!");
         match unverified_credential.credential_type() {
             CredentialType::Basic => {
-                log::info!("Received Basic credential. Continuing...");
+                log::debug!("[MlsEngine] Received Basic credential. Continuing...");
                 Ok(())
             }
             CredentialType::X509 => {
-                log::info!(
-                    "Received X509 credential. This is NOT YET SUPPORTED. Continuing verifying it as Basic credential....");
+                log::warn!(
+                    "[MlsEngine] Received X509 credential. This is NOT YET SUPPORTED. Verifying as Basic credential..."
+                );
                 Ok(())
             }
             CredentialType::Other(custom_type) => match custom_type {
                 0xF000 => {
-                    log::info!("Received Ed25519 credential. Validating...");
+                    log::info!("[MlsEngine] Received Ed25519 credential. Validating...");
                     let credential = Ed25519credential::try_from(unverified_credential.clone());
                     if credential.is_err() {
-                        log::error!("Error converting openmls::credentials::Credential to valkyire-mls::Ed25519credential.");
-                        return Err(Error::msg("converting openmls::credentials::Credential to valkyire-mls::Ed25519credential."));
+                        log::error!(
+                            "[MlsEngine] Error converting openmls::credentials::Credential to valkyrie-mls::Ed25519credential."
+                        );
+                        return Err(Error::msg(
+                            "[MlsEngine] Error converting openmls::credentials::Credential to valkyrie-mls::Ed25519credential."
+                        ));
                     }
                     let credential = credential.unwrap();
                     credential
@@ -617,8 +620,12 @@ impl MlsSwarmLogic for MlsEngine {
                         .map_err(authentication::CredentialError::from)?;
                     Ok(())
                 }
-
-                _ => Err(Error::msg("Received unsupported credential type!")),
+                _ => {
+                    log::error!("[MlsEngine] Received unsupported credential type!");
+                    Err(Error::msg(
+                        "[MlsEngine] Received unsupported credential type!",
+                    ))
+                }
             },
         }
     }
