@@ -1,0 +1,66 @@
+# version: "3.9"
+services:
+  node2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NODE_NAME: node2
+        NODE_IP: 10.10.0.2
+    container_name: node2
+    hostname: node2
+    environment:
+        NODE_NAME: node2
+        NODE_IP: 10.10.0.2
+    networks:
+      bridge_swarm:
+        ipv4_address: 10.10.0.2
+    tty: true
+
+  node3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NODE_NAME: node3
+        NODE_IP: 10.10.0.3
+    container_name: node3
+    hostname: node3
+    environment:
+        NODE_NAME: node3
+        NODE_IP: 10.10.0.3
+    networks:
+      bridge_swarm:
+        ipv4_address: 10.10.0.3
+    tty: true
+
+  node4:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NODE_NAME: node4
+        NODE_IP: 10.10.0.4
+    container_name: node4
+    hostname: node4
+    environment:
+        NODE_NAME: node4
+        NODE_IP: 10.10.0.4
+    networks:
+      bridge_swarm:
+        ipv4_address: 10.10.0.4
+    tty: true
+
+
+
+networks:
+  bridge_swarm:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.0.0/24  # Use your network's subnet
+          gateway: 10.10.0.1    # Use your network's gateway
+    driver_opts:
+      com.docker.network.bridge.name: "bridge_swarm"
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+
