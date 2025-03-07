@@ -1,0 +1,8 @@
+[package]
+name = "corosync-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rust-corosync = "0.2.4"   # or latest version matching your Corosync
+
