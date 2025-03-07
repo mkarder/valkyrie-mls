@@ -29,7 +29,7 @@ A custom bridge network named `bridge_swarm` is created. This setup allows three
 
 
 
-| *Entitiy*       | *IP address*  |
+| *Entity*       | *IP address*  |
 | --------------- | ------------- |
 | Network range   | `10.10.0.0/24` |
 | Default gateway | `10.10.0.1`    |
