@@ -1,3 +1,9 @@
+mod core;
+mod mls;
+mod auth;
+mod transport;
+mod config;
+
 fn main() {
-    println!("Hello, world!");
+    println!("Starting Valkyrie MLS...");
 }
