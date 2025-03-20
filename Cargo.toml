@@ -5,3 +5,13 @@ edition = "2021"
 
 [dependencies]
 openmls = "0.6.0"
+openmls_rust_crypto = "0.3.0"
+openmls_basic_credential = "0.3.0"
+tls_codec = "0.4.1"  # Ensure the correct version
+futures = "0.3.0"
+async-std = "1"
+async-ctrlc = "1.2.0"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+log = "0.4.26"
+env_logger = "0.11.7"
