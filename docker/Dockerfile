@@ -74,6 +74,9 @@ RUN cargo build --release
 # Install OpenMLS
 RUN git clone https://github.com/openmls/openmls.git
 
+# install Valkyrie-MLS
+RUN git clone https://github.com/mkarder/valkyrie-mls.git
+
 # Cleanup
 RUN apt-get remove --purge -y software-properties-common && apt-get autoremove -y
 
