@@ -56,6 +56,7 @@ async fn main() -> Result<()> {
 
     loop {
         select! {
+            biased;
             // DS → MLS
             Ok((size, src, buf)) = async {
                 let mut buf = [0u8; 1024];
