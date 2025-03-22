@@ -24,6 +24,11 @@ pub trait MlsSwarmLogic {
         
 }
 
+enum CorosyncOperation {
+    Add, 
+    Remove 
+}
+
 impl MlsGroupHandler {
     pub fn new() -> Self {
         let provider = OpenMlsRustCrypto::default();
@@ -58,6 +63,9 @@ impl MlsGroupHandler {
         }
     }
 
+    fn update_corosyn_state(operation : CorosyncOperation, node : &str, ip: &str) {
+        
+    }
 }
 
 
@@ -171,6 +179,7 @@ impl MlsSwarmLogic for MlsGroupHandler {
         }
     }
 }
+
 fn generate_credential_with_key(
     identity: Vec<u8>,
     credential_type: CredentialType,

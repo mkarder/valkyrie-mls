@@ -87,6 +87,9 @@ async fn main() -> Result<()> {
                 tx_mls_socket.send_to(&buf[..size], TX_MLS_ADDR).await?;
             }
 
+            // CLI -> MLS 
+            
+
             // MLS → Application
             Ok((size, src, buf)) = async {
                 let mut buf = [0u8; 1024];
