@@ -26,7 +26,7 @@ pub trait MlsSwarmLogic {
     
     fn handle_incoming_welcome(&mut self, welcome: Welcome);
     fn handle_incoming_group_info(&mut self, group_info: VerifiableGroupInfo);
-    fn handle_incoming_key_package(&mut self, key_package_in: KeyPackageIn);
+    fn handle_incoming_key_package(&mut self, key_package_in: KeyPackageIn) -> (MlsMessageOut, MlsMessageOut);
 }
 
 #[allow(dead_code)]
@@ -183,10 +183,6 @@ impl MlsSwarmLogic for MlsGroupHandler {
         }
     }
 
-    fn handle_incoming_key_package(&mut self, key_package_in: KeyPackageIn) {
-        log::info!("TODO: Implement Policy for incoming KeyPackage.");
-    }
-    
     fn handle_incoming_welcome(&mut self, welcome: Welcome) {
         log::info!("TODO: Verify welcome message before joining group.");
         let staged_join = StagedWelcome::new_from_welcome(
@@ -201,6 +197,21 @@ impl MlsSwarmLogic for MlsGroupHandler {
     
     fn handle_incoming_group_info(&mut self, _group_info: VerifiableGroupInfo) {
         log::info!("TODO: Implement Policy for incoming GroupInfo.");
+    }
+
+    fn handle_incoming_key_package(&mut self, key_package_in: KeyPackageIn) -> (MlsMessageOut, MlsMessageOut) {
+        log::info!("TODO: Implement policy for incoming KeyPackage.");
+        let key_package = key_package_in.validate(self.provider.crypto(), ProtocolVersion::Mls10)
+            .expect("Incoming KeyPackage could not be verified");
+ 
+        let (mls_message_out, welcome, _group_info) = self.group
+            .add_members(
+                &self.provider,
+                &self.signature_key,
+                &[key_package],
+            )
+            .expect("Could not add members.");
+        (mls_message_out, welcome)
     }
 }
 
