@@ -1,5 +1,7 @@
+use std::fmt::Debug;
+
 use anyhow::{Context, Error, Ok};
-use openmls::{group, prelude::*};
+use openmls::prelude::{group_info::VerifiableGroupInfo, *};
 use openmls::group::MlsGroup;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
@@ -21,14 +23,19 @@ pub trait MlsSwarmLogic {
     fn process_incoming_network_message(&mut self, message: &[u8]) -> Result<Vec<u8>, Error>; 
     fn process_incoming_delivery_service_message(&mut self, message: &[u8]) -> Result<(), Error>;
     fn process_outgoing_application_message(&mut self, message: &[u8]) -> Result<Vec<u8>, Error>;
-        
+    
+    fn handle_incoming_welcome(&mut self, welcome: Welcome);
+    fn handle_incoming_group_info(&mut self, group_info: VerifiableGroupInfo);
+    fn handle_incoming_key_package(&mut self, key_package_in: KeyPackageIn);
 }
 
+#[allow(dead_code)]
 enum CorosyncOperation {
     Add, 
     Remove 
 }
 
+#[allow(dead_code)]
 impl MlsGroupHandler {
     pub fn new() -> Self {
         let provider = OpenMlsRustCrypto::default();
@@ -64,7 +71,7 @@ impl MlsGroupHandler {
     }
 
     fn update_corosyn_state(operation : CorosyncOperation, node : &str, ip: &str) {
-        
+
     }
 }
 
@@ -106,7 +113,6 @@ impl MlsSwarmLogic for MlsGroupHandler {
             MlsMessageBodyIn::KeyPackage(_) => Err(Error::msg("Expected ApplicationMessage from Network. Received KeyPackage.")),
         }
     }
-
 
     fn process_outgoing_application_message(&mut self, message: &[u8]) -> Result<Vec<u8>, Error> {
         let mls_message = self.group
@@ -163,20 +169,38 @@ impl MlsSwarmLogic for MlsGroupHandler {
                 }
             },
             MlsMessageBodyIn::Welcome(welcome) => {
-                // TODO: Here we assume that we join all groups when receiving a welcome.
-                let staged_join = StagedWelcome::new_from_welcome(
-                    &self.provider, 
-                    &MlsGroupJoinConfig::default(), 
-                    welcome, 
-                    None 
-                ).expect("Error constructing staged join");
-                let group = staged_join.into_group(&self.provider).expect("Error joining group from StagedWelcome");
-                self.group = group;
+                self.handle_incoming_welcome(welcome);
                 Ok(())
             },
-            MlsMessageBodyIn::GroupInfo(_) => Err(Error::msg("Expected ApplicationMessage from Network. Received GroupInfo.")),
-            MlsMessageBodyIn::KeyPackage(_) => Err(Error::msg("Expected ApplicationMessage from Network. Received KeyPackage.")),
+            MlsMessageBodyIn::GroupInfo(group_info) => {
+                self.handle_incoming_group_info(group_info);
+                Ok(())
+            },
+            MlsMessageBodyIn::KeyPackage(key_package_in) => {
+                self.handle_incoming_key_package(key_package_in);
+                Ok(())
+            },
         }
+    }
+
+    fn handle_incoming_key_package(&mut self, key_package_in: KeyPackageIn) {
+        log::info!("TODO: Implement Policy for incoming KeyPackage.");
+    }
+    
+    fn handle_incoming_welcome(&mut self, welcome: Welcome) {
+        log::info!("TODO: Verify welcome message before joining group.");
+        let staged_join = StagedWelcome::new_from_welcome(
+            &self.provider, 
+            &MlsGroupJoinConfig::default(), 
+            welcome, 
+            None 
+        ).expect("Error constructing staged join");
+        let group = staged_join.into_group(&self.provider).expect("Error joining group from StagedWelcome");
+        self.group = group;
+    }
+    
+    fn handle_incoming_group_info(&mut self, _group_info: VerifiableGroupInfo) {
+        log::info!("TODO: Implement Policy for incoming GroupInfo.");
     }
 }
 

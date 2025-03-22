@@ -27,16 +27,16 @@ async fn main() -> Result<()> {
     );
 
 
-    let multicast_addr = "239.255.0.1:5000";
-    let mls_addr : &str = "127.0.0.1:8000";
+    let ds_addr = "127.0.0.1:6000";
+    let app : &str = "127.0.0.1:7000";
 
     // Bind to an available UDP port on the local machine
     let socket = UdpSocket::bind("0.0.0.0:0").await?;
 
     // Test sending arbitrary payload
-    match socket.send_to("Test".as_bytes(), mls_addr).await {
-        Ok(size) => println!("✅ Test message sent successfully! ({} bytes)", size),
-        Err(e) => println!("❌ Failed to send test message: {}", e),
+    match socket.send_to("Test".as_bytes(), app).await {
+        Ok(size) => println!("✅ Test application message sent successfully! ({} bytes)", size),
+        Err(e) => println!("❌ Failed to application send test message: {}", e),
     }
 
     
@@ -46,8 +46,8 @@ async fn main() -> Result<()> {
         .expect("Error serializing KeyPackage");
     
         
-    match socket.send_to(&msg_out, multicast_addr).await {
-        Ok(size) => println!("✅ KeyPackageBundle sent successfully! ({} bytes)", size),
+    match socket.send_to(&msg_out, ds_addr).await {
+        Ok(size) => println!("✅ KeyPackageBundle sent successfully as DS! ({} bytes)", size),
         Err(e) => println!("❌ Failed to send KeyPackageBundle: {}", e),
     }
 
