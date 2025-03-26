@@ -12,9 +12,6 @@ impl Corosync {
         Corosync { handle }
     }
 
-    pub fn join_group(&self, group_name: &str) -> Result<(), Box<dyn std::error::Error>> {
-        join_group(&self.handle, group_name)
-    }
 
     /// Function to send a message
     pub fn send_message(
@@ -41,23 +38,25 @@ impl Corosync {
 }
 
 /// Callback function for received messages
-fn deliver_callback(
+fn deliver_callback<'a>(
     _handle: &Handle,
     group_name: String,
     nodeid: NodeId,
     pid: u32,
-    msg: &[u8],
+    msg: &'a [u8],
     msg_len: usize,
-) {
+)-> &'a [u8] {
     println!(
         "Deliver callback: group=\"{}\", from node {:?} (pid {}), msg_len={}",
         group_name, nodeid, pid, msg_len
     );
+
     if let Ok(text) = std::str::from_utf8(msg) {
         println!("  Message content: {}", text);
     } else {
         println!("  Message bytes: {:?}", msg);
     }
+    msg
 }
 
 /// Callback for membership changes
@@ -92,6 +91,8 @@ fn initialize() -> cpg::Handle {
 
     // Initialize CPG
     let handle = cpg::initialize(&ModelData::ModelV1(model1), 0).expect("Failed to initialize CPG");
+
+    join_group(&handle, "my_test_group").expect("Failed to join group");
 
     println!("CPG initialized.");
     handle
