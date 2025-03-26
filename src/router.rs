@@ -1,5 +1,6 @@
 use crate::mls_group_handler::MlsSwarmLogic;
 use crate::{mls_group_handler, MlsGroupHandler};
+use crate::{corosync, Corosync};
 use std::net::SocketAddr;
 use tokio::net::UdpSocket;
 use tokio::{select, signal};
@@ -23,11 +24,14 @@ const TX_MLS_ADDR: &str = "127.0.0.1:8001";
 
 pub struct Router {
     mls_group_handler: MlsGroupHandler,
+    corosync: Corosync,
 }
 
 impl Router {
-    pub fn new(mls_group_handler: MlsGroupHandler) -> Self {
-        Self { mls_group_handler }
+    pub fn new(mls_group_handler: MlsGroupHandler, corosync: Corosync ) -> Self {
+        Self { 
+            mls_group_handler, 
+            corosync }
     }
 
     pub async fn run_main_loop(&mut self) -> Result<()> {
@@ -71,7 +75,8 @@ impl Router {
                     log::info!("Application → MLS: {} bytes from {}", size, src);
                     let data = self.mls_group_handler.process_outgoing_application_message(&buf[..size])
                         .expect("Error handling outgoing application data.");
-                    tx_network_socket.send_to(data.as_slice(), "239.255.0.1:5001").await?;
+                    //tx_network_socket.send_to(data.as_slice(), "239.255.0.1:5001").await?;
+                    self.corosync.send_message(&self.corosync.handle, data.as_slice());
                 }
 
                 // Network → MLS (Multicast RX)

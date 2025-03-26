@@ -2,33 +2,43 @@ use rust_corosync::cpg;
 use rust_corosync::cpg::{Address, Guarantee, Handle, Model1Data, Model1Flags, ModelData};
 use rust_corosync::{DispatchFlags, NodeId};
 
-
 pub struct Corosync {
-    handle: Handle,
-
+    pub handle: Handle,
 }
 
 impl Corosync {
     pub fn new() -> Self {
         let handle = initialize();
-        Corosync {
-            handle,
-        }
+        Corosync { handle }
     }
 
     pub fn join_group(&self, group_name: &str) -> Result<(), Box<dyn std::error::Error>> {
         join_group(&self.handle, group_name)
     }
 
-    pub fn send_message(&self, message: &str) -> Result<(), Box<dyn std::error::Error>> {
-        send_message(&self.handle, message)
+    /// Function to send a message
+    pub fn send_message(
+        &self,
+        handle: &Handle,
+        message: &[u8],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if let Err(e) = cpg::mcast_joined(*handle, Guarantee::TypeAgreed, message) {
+            eprintln!("Failed to send message: {}", e);
+        }
+        // You can decide how you want to display the bytes. This prints them in debug format:
+        println!("Sent message to group: {:?}", message);
+        Ok(())
     }
 
-    pub fn receive_message(&self) -> Result<(), Box<dyn std::error::Error>> {
-        receive_message(self.handle)
+    /// Function to receive a message
+    /// Note: DispatchFlags can be set to OneNonBlocking, One, All, or Blocking
+    pub fn receive_message(&self, handle: Handle) -> Result<(), Box<dyn std::error::Error>> {
+        if let Err(e) = cpg::dispatch(handle, DispatchFlags::OneNonblocking) {
+            eprintln!("Dispatch error: {}", e);
+        }
+        Ok(())
     }
 }
-
 
 /// Callback function for received messages
 fn deliver_callback(
@@ -101,10 +111,9 @@ fn send_message(handle: &Handle, message: &str) -> Result<(), Box<dyn std::error
     if let Err(e) = cpg::mcast_joined(*handle, Guarantee::TypeAgreed, message_bytes) {
         eprintln!("Failed to send message: {}", e);
     }
-    println!("Sent message to group: \"{}\"",  message);
+    println!("Sent message to group: \"{}\"", message);
     Ok(())
 }
-
 
 /// Function to receive a message
 /// Note: DispatchFlags can be set to OneNonBlocking, One, All, or Blocking
