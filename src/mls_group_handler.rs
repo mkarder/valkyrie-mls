@@ -1,5 +1,3 @@
-use std::fmt::Debug;
-
 use anyhow::{Context, Error, Ok};
 use openmls::prelude::{group_info::VerifiableGroupInfo, *};
 use openmls::group::MlsGroup;
@@ -18,7 +16,6 @@ pub struct MlsGroupHandler{
     key_package: KeyPackageBundle,
 }
 
-#[allow(dead_code)]
 pub trait MlsSwarmLogic {
     fn process_incoming_network_message(&mut self, message: &[u8]) -> Result<Vec<u8>, Error>; 
     fn process_incoming_delivery_service_message(&mut self, message: &[u8]) -> Result<(), Error>;
@@ -29,13 +26,7 @@ pub trait MlsSwarmLogic {
     fn handle_incoming_key_package(&mut self, key_package_in: KeyPackageIn) -> (MlsMessageOut, MlsMessageOut);
 }
 
-#[allow(dead_code)]
-enum CorosyncOperation {
-    Add, 
-    Remove 
-}
 
-#[allow(dead_code)]
 impl MlsGroupHandler {
     pub fn new() -> Self {
         let provider = OpenMlsRustCrypto::default();
@@ -68,10 +59,6 @@ impl MlsGroupHandler {
             signature_key,
             key_package,
         }
-    }
-
-    fn update_corosyn_state(operation : CorosyncOperation, node : &str, ip: &str) {
-
     }
 }
 
