@@ -1,8 +1,10 @@
 use rust_corosync::cpg;
 use rust_corosync::cpg::{Address, Guarantee, Handle, Model1Data, Model1Flags, ModelData};
 use rust_corosync::NodeId;
+use crate::router::TX_CHANNEL;
+use tokio::task;
 
-//const TX_ADDR: &str = "127.0.0.1:6000";
+
 
 /// Callback function for received messages
 pub fn deliver_callback(
@@ -13,17 +15,21 @@ pub fn deliver_callback(
     msg: &[u8],
     msg_len: usize,
 ) {
-    // Log receipt of the message
     println!(
         "Deliver callback: group=\"{}\", from node {:?} (pid {}), msg_len={}",
         group_name, nodeid, pid, msg_len
     );
-    // Safely interpret the message (here we expect UTF-8 text for demonstration)
-    if let Ok(text) = std::str::from_utf8(msg) {
-        println!("  Message content: {}", text);
-        //mls_group_handler.process_incoming_delivery_service_message(&buf[..size])
+
+    if let Some(tx) = TX_CHANNEL.get() {
+        let msg_vec = msg.to_vec();
+        let tx = tx.clone();
+        task::spawn(async move {
+            if let Err(e) = tx.send(msg_vec).await {
+                eprintln!("Failed to send message through channel: {}", e);
+            }
+        });
     } else {
-        println!("  Message bytes: {:?}", msg);
+        eprintln!("TX_CHANNEL not initialized");
     }
 }
 

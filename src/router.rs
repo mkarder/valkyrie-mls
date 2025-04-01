@@ -1,26 +1,32 @@
+use crate::corosync;
 use crate::corosync::receive_message;
 use crate::mls_group_handler::MlsSwarmLogic;
-use crate::corosync;
 use crate::MlsGroupHandler;
 use anyhow::Result;
+use once_cell::sync::OnceCell;
+use rust_corosync::cpg::Handle;
 use std::net::SocketAddr;
 use tokio::net::UdpSocket;
+use tokio::sync::mpsc;
 use tokio::{select, signal, task};
-use rust_corosync::cpg::Handle;
 
 // TODO: Should be fetched from a configuration file
 const RX_MULTICAST_ADDR: &str = "239.255.0.1"; // NB!: No port specifcation, use SOCKET const
-//const TX_MULTICAST_ADDR: &str = "239.255.0.1";
-
+                                               //const TX_MULTICAST_ADDR: &str = "239.255.0.1";
 
 const RX_DS_ADDR: &str = "127.0.0.1:6000";
-//const TX_DS_ADDR: &str = "127.0.0.1:6001";
 
 const RX_APPLICATION_ADDR: &str = "127.0.0.1:7000";
 const TX_APPLICATION_ADDR: &str = "127.0.0.1:7001";
 
-//const RX_MLS_ADDR: &str = "127.0.0.1:8000";
-//const TX_MLS_ADDR: &str = "127.0.0.1:8001";
+pub static TX_CHANNEL: OnceCell<mpsc::Sender<Vec<u8>>> = OnceCell::new();
+
+// Function to initialize the global sender exactly once:
+pub fn init_global_channel(tx: mpsc::Sender<Vec<u8>>) {
+    TX_CHANNEL
+        .set(tx)
+        .expect("Global TX_CHANNEL already initialized");
+}
 
 pub struct Router {
     mls_group_handler: MlsGroupHandler,
@@ -33,7 +39,7 @@ impl Router {
 
         Self {
             mls_group_handler,
-            corosync_handle: handle, 
+            corosync_handle: handle,
         }
     }
 
@@ -44,41 +50,33 @@ impl Router {
         let rx_network_socket = UdpSocket::bind("0.0.0.0:5000").await?; // Multicast RX
         rx_network_socket.join_multicast_v4(RX_MULTICAST_ADDR.parse()?, "0.0.0.0".parse()?)?;
 
-        // TX Sockets (Router sending data to components)
-        //let tx_ds_socket = UdpSocket::bind("0.0.0.0:0").await?
         let tx_app_socket = UdpSocket::bind("0.0.0.0:0").await?;
 
         let tx_network_socket = UdpSocket::bind("0.0.0.0:5001").await?; // Multicast TX
         tx_network_socket.set_multicast_loop_v4(true)?;
 
+        let (tx_corosync_channel, mut rx_corosync_channel) = mpsc::channel::<Vec<u8>>(32);
+        init_global_channel(tx_corosync_channel);
 
         // Spawn a blocking task to handle incoming Corosync messages
         let handle_clone = self.corosync_handle.clone();
         task::spawn_blocking(move || {
-            receive_message(&handle_clone)
-                .expect("Error receiving message from Corosync");
+            receive_message(&handle_clone).expect("Error receiving message from Corosync");
         });
-        
-
-
 
         loop {
             select! {
                 biased;
-                
-                // DS → MLS
-                /*
-                    let mut buf = [0u8; 1024];
-                    let (size, src) = rx_ds_socket.recv_from(&mut buf).await?;
-                    Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; 1024])>
-                } => {
-                    log::info!("DS → MLS: {} bytes from {}", size, src);
-                    self.mls_group_handler.process_incoming_delivery_service_message(&buf[..size])
-                        .expect("Error handling incoming message from DS");
-                } */
+                // Corosync → MLS
+                Some(data) = rx_corosync_channel.recv() => {
+                    log::info!("Corosync → MLS: {} bytes received", data.len());
+                    self.mls_group_handler
+                        .process_incoming_delivery_service_message(&data)
+                        .expect("Error handling incoming message from Corosync");
+                }
 
 
-                // MLS → DS
+                // MLS → Corosync
                 Ok((size, src, buf)) = async {
                     let mut buf = [0u8; 1024];
                     let (size, src) = rx_ds_socket.recv_from(&mut buf).await?;
@@ -129,4 +127,3 @@ impl Router {
         Ok(())
     }
 }
-
