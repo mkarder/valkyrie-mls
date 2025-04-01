@@ -1,5 +1,3 @@
-use std::fmt::Debug;
-
 use anyhow::{Context, Error, Ok};
 use openmls::prelude::{group_info::VerifiableGroupInfo, *};
 use openmls::group::MlsGroup;
