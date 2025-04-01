@@ -30,6 +30,10 @@ pub fn deliver_callback(
         });
     } else {
         eprintln!("TX_CHANNEL not initialized");
+
+
+
+
     }
 }
 
@@ -41,16 +45,16 @@ pub fn confchg_callback(
     left_list: Vec<Address>,
     joined_list: Vec<Address>,
 ) {
-    println!(
-        "Confchg callback: Group \"{}\" membership changed.",
-        group_name
-    );
-    println!("  Current members: {} node(s)", member_list.len());
+    log::info!("Confchg callback: Group \"{}\" membership changed.", group_name);
+    log::info!("  Current members: {} node(s)", member_list.len());
+
     if !joined_list.is_empty() {
-        println!("  Nodes joined: {:?}", joined_list);
+        log::info!("  Nodes joined: {:?}", joined_list);
+   
     }
     if !left_list.is_empty() {
-        println!("  Nodes left: {:?}", left_list);
+        log::info!("  Nodes left: {:?}", left_list);
+
     }
 }
 
@@ -68,7 +72,7 @@ pub fn initialize() -> cpg::Handle {
 
     join_group(&handle, "my_test_group").expect("Failed to join group");
 
-    println!("CPG initialized.");
+    log::info!("CPG initialized with group \"my_test_group\".");
 
     handle
 }
@@ -77,7 +81,7 @@ pub fn initialize() -> cpg::Handle {
 pub fn join_group(handle: &Handle, group_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     //let group_name = "my_test_group";
     cpg::join(*handle, group_name)?;
-    println!("Joined group \"{}\".", group_name);
+    log::info!("Joined group \"{}\".", group_name);
     Ok(())
 }
 
@@ -85,8 +89,7 @@ pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::
     if let Err(e) = cpg::mcast_joined(*handle, Guarantee::TypeAgreed, message) {
         eprintln!("Failed to send message: {}", e);
     }
-    // You can decide how you want to display the bytes. This prints them in debug format:
-    println!("Sent message to group: {:?}", message);
+    log::info!("Sent message to group: {:?}", message);
     Ok(())
 }
 
