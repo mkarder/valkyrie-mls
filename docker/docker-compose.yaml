@@ -2,8 +2,8 @@
 services:
   node2:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
       args:
         NODE_NAME: node2
         NODE_IP: 10.10.0.2
@@ -19,8 +19,8 @@ services:
 
   node3:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
       args:
         NODE_NAME: node3
         NODE_IP: 10.10.0.3
@@ -36,8 +36,8 @@ services:
 
   node4:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
       args:
         NODE_NAME: node4
         NODE_IP: 10.10.0.4

@@ -1,5 +1,3 @@
-use std::fmt::Debug;
-
 use anyhow::{Context, Error, Ok};
 use openmls::prelude::{group_info::VerifiableGroupInfo, *};
 use openmls::group::MlsGroup;
@@ -11,7 +9,7 @@ const MACHINE_ID : &str = "NODE";
 const CREDENTIAL_TYPE : CredentialType = CredentialType::Basic;
 
 #[allow(dead_code)]
-pub struct MlsGroupHandler{
+pub struct MlsGroupHandler {
     provider: OpenMlsRustCrypto,
     group: MlsGroup,
     signature_key: SignatureKeyPair,

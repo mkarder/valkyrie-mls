@@ -1,5 +1,6 @@
 mod mls_group_handler;
 mod router;
+mod corosync;
 
 use mls_group_handler::MlsGroupHandler;
 use router::Router;
