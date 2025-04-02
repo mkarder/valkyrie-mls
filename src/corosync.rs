@@ -1,12 +1,10 @@
+use crate::router::TX_CHANNEL;
 use rust_corosync::cpg;
 use rust_corosync::cpg::{Address, Guarantee, Handle, Model1Data, Model1Flags, ModelData};
 use rust_corosync::NodeId;
-use crate::router::TX_CHANNEL;
 use tokio::task;
 
-
-
-/// Callback function for received messages
+/// Callback function for received multicast messages from Corosync 
 pub fn deliver_callback(
     _handle: &Handle,
     group_name: String,
@@ -15,8 +13,8 @@ pub fn deliver_callback(
     msg: &[u8],
     msg_len: usize,
 ) {
-    println!(
-        "Deliver callback: group=\"{}\", from node {:?} (pid {}), msg_len={}",
+    log::info!(
+        "[Corosync] Deliver callback: group=\"{}\", from node {:?} (pid {}), msg_len={}",
         group_name, nodeid, pid, msg_len
     );
 
@@ -25,15 +23,11 @@ pub fn deliver_callback(
         let tx = tx.clone();
         task::spawn(async move {
             if let Err(e) = tx.send(msg_vec).await {
-                eprintln!("Failed to send message through channel: {}", e);
+                log::error!("[Corosync] Failed to forward message via TX_CHANNEL: {}", e);
             }
         });
     } else {
-        eprintln!("TX_CHANNEL not initialized");
-
-
-
-
+        log::warn!("[Corosync] TX_CHANNEL not initialized, dropping message");
     }
 }
 
@@ -45,16 +39,14 @@ pub fn confchg_callback(
     left_list: Vec<Address>,
     joined_list: Vec<Address>,
 ) {
-    log::info!("Confchg callback: Group \"{}\" membership changed.", group_name);
+    log::info!("[Corosync] Confchg callback: Group \"{}\" membership changed.", group_name);
     log::info!("  Current members: {} node(s)", member_list.len());
 
     if !joined_list.is_empty() {
         log::info!("  Nodes joined: {:?}", joined_list);
-   
     }
     if !left_list.is_empty() {
         log::info!("  Nodes left: {:?}", left_list);
-
     }
 }
 
@@ -70,31 +62,30 @@ pub fn initialize() -> cpg::Handle {
     // Initialize CPG
     let handle = cpg::initialize(&ModelData::ModelV1(model1), 0).expect("Failed to initialize CPG");
 
-    join_group(&handle, "my_test_group").expect("Failed to join group");
+    join_group(&handle, "my_test_group")
+        .expect("[Corosync] Failed to join group");
 
-    log::info!("CPG initialized with group \"my_test_group\".");
-
+    log::info!("[Corosync] initialized with group \"my_test_group\".");
     handle
 }
 
-/// Function to join a group
+/// Joins a Corosync CPG group
 pub fn join_group(handle: &Handle, group_name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    //let group_name = "my_test_group";
     cpg::join(*handle, group_name)?;
-    log::info!("Joined group \"{}\".", group_name);
+    log::info!("[Corosync] Joined group \"{}\".", group_name);
     Ok(())
 }
 
+/// Sends a multicast message to the currently joined group
 pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = cpg::mcast_joined(*handle, Guarantee::TypeAgreed, message) {
         eprintln!("Failed to send message: {}", e);
     }
-    log::info!("Sent message to group: {:?}", message);
+    log::info!("[Corosync] Sent message to group: {:?}", message);
     Ok(())
 }
 
-// Function to receive a message
-// Note: DispatchFlags can be set to OneNonBlocking, One, All, or Blocking
+/// Blocking receive loop for Corosync messages (runs in a separate thread)
 pub fn receive_message(handle: &Handle) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = cpg::dispatch(*handle, rust_corosync::DispatchFlags::Blocking) {
         eprintln!("Dispatch error: {}", e);
