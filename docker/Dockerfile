@@ -6,7 +6,7 @@
     
     # Copy manifests
     COPY ../Cargo.toml .
-    COPY ../Cargo.lock .    # optional but recommended
+    COPY ../Cargo.lock .
     
     # Pre-build to cache dependencies
     RUN mkdir src && echo "fn main() {}" > src/main.rs
