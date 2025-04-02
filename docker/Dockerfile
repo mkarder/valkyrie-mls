@@ -39,7 +39,7 @@ RUN apt-get update && apt-get install -y \
 
 ###   Corosync   ###
 # Copy configuration files
-COPY corosync.conf /etc/corosync/corosync.conf.template
+COPY docker/corosync.conf /etc/corosync/corosync.conf.template
 
 # Replace placeholders in 'corosync.conf'
 RUN sed "s/{{NODE_IP}}/$NODE_IP/" /etc/corosync/corosync.conf.template > /etc/corosync/corosync.conf
@@ -66,22 +66,14 @@ WORKDIR /root
 
 ### RUST APP
 #Copy Rust project
-COPY corosync_rust/ .
-
-# Build the Rust project 
-RUN cargo build --release
-
-# Install OpenMLS
-RUN git clone https://github.com/openmls/openmls.git
-
-# install Valkyrie-MLS
-RUN git clone https://github.com/mkarder/valkyrie-mls.git
+COPY ../src/ .
+COPY ../Cargo.toml .
 
 # Cleanup
 RUN apt-get remove --purge -y software-properties-common && apt-get autoremove -y
 
 # Copy the entrypoint script into the container
-COPY entrypoint.sh /entrypoint.sh
+COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh 
 
 #Set the entrypoint to the script
