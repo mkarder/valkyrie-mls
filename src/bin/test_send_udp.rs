@@ -51,9 +51,19 @@ async fn main() -> Result<()> {
         Err(e) => println!("❌ Failed to send KeyPackageBundle: {}", e),
     }
 
-
-
     Ok(())
+
+}
+
+fn send_keypackage() {
+    
+}
+
+fn send_welcome() {
+
+}
+
+fn send_aplication_message() {
 
 }
 
