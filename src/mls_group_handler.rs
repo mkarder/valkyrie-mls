@@ -21,11 +21,14 @@ pub struct MlsGroupHandler{
 
 pub trait MlsSwarmLogic {
     fn add_new_member(&mut self, key_package: KeyPackage) -> (MlsMessageOut, MlsMessageOut);
+    fn add_new_member_from_bytes(&mut self, key_package_bytes: &[u8]) -> (MlsMessageOut, MlsMessageOut);
     fn add_pending_key_packages(&mut self) -> Result<Vec<(MlsMessageOut,MlsMessageOut)>, Error>; 
 
     fn remove_member(&mut self, leaf_node: LeafNodeIndex) -> (MlsMessageOut, Option<MlsMessageOut>);
 
-    fn update_self(&mut self) -> (MlsMessageOut, Option<MlsMessageOut>); 
+    fn update_self(&mut self) -> (MlsMessageOut, Option<MlsMessageOut>);
+    
+    fn retrieve_ratchet_tree(&self) -> Vec<u8>;  
 
     fn process_incoming_network_message(&mut self, message: &[u8]) -> Result<Vec<u8>, Error>; 
     fn process_incoming_delivery_service_message(&mut self, message: &[u8]) -> Result<Option<(MlsMessageOut, MlsMessageOut)>, Error>;
@@ -302,6 +305,26 @@ impl MlsSwarmLogic for MlsGroupHandler {
             .expect("Error updating self");
 
         (group_commit, welcome_option)
+    }
+    
+    /// Helper function to retrieve the ratchet tree from the group.
+    /// For obtaining index of nodes.  
+    fn retrieve_ratchet_tree(&self) -> Vec<u8> {
+        self.group
+            .export_ratchet_tree()
+            .tls_serialize_detached()
+            .expect("Error serializing ratchet tree")
+    }
+    
+    fn add_new_member_from_bytes(&mut self, mut key_package_bytes: &[u8]) -> (MlsMessageOut, MlsMessageOut) {
+        let message_in = MlsMessageIn::tls_deserialize(&mut key_package_bytes).expect("Error deserializing message");
+        let key_package_in = match message_in.extract() {
+            MlsMessageBodyIn::KeyPackage(kp) => kp,
+            _ => panic!("Expected KeyPackage. Received: Something completely else!"),
+        };
+        let key_package = key_package_in.validate(self.provider.crypto(), ProtocolVersion::Mls10)
+            .expect("Incoming KeyPackage could not be verified");
+        self.add_new_member(key_package)
     }
 }
 

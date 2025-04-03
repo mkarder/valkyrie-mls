@@ -1,11 +1,12 @@
 use crate::mls_group_handler::MlsSwarmLogic;
 use crate::MlsGroupHandler;
 use std::net::SocketAddr;
-use tls_codec::Serialize;
+use openmls::prelude::LeafNodeIndex;
+use tls_codec::{Serialize, Deserialize};
 use tokio::net::UdpSocket;
 use tokio::{select, signal};
-use anyhow::Result;
-
+use anyhow::{Error, Result};
+use std::result::Result::Ok;
 
 
 // TODO: Should be fetched from a configuration file
@@ -19,14 +20,99 @@ const TX_APPLICATION_ADDR: &str = "127.0.0.1:7001";
 
 const MLS_MSG_BUFFER_SIZE: usize = 2048; // TODO: Explain choice of this size  
 
-/* 
-enum MlsOperation {
-    ADD : 0x00.
-    REMOVE : 0x01,
-    UPDATE : 0x02,
-    APPLICATIOn_MSG : 0x03,
+ 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MlsOperation {
+    Add = 0x00,
+    AddPending = 0x01,
+    Remove = 0x02,
+    Update = 0x03,
+    RetrieveRatchetTree = 0x04,
+    ApplicationMsg = 0x05,
+    BroadcastKeyPackage = 0x06,
 }
-*/
+
+impl TryFrom<u8> for MlsOperation {
+    type Error = anyhow::Error;
+
+    fn try_from(byte: u8) -> Result<Self, Error> {
+        match byte {
+            0x00 => Ok(MlsOperation::Add),
+            0x01 => Ok(MlsOperation::AddPending),
+            0x02 => Ok(MlsOperation::Remove),
+            0x03 => Ok(MlsOperation::Update),
+            0x04 => Ok(MlsOperation::RetrieveRatchetTree),
+            0x05 => Ok(MlsOperation::ApplicationMsg),
+            0x06 => Ok(MlsOperation::BroadcastKeyPackage),
+            _ => Err(Error::msg("Invalid MlsOperation byte")),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum Command {
+    Add { key_package_bytes: Vec<u8> },
+    AddPending ,
+    Remove { index: u32 },
+    Update,
+    RetrieveRatchetTree,
+    ApplicationMsg { data: Vec<u8> },
+}
+
+pub fn parse_command(buffer: &[u8]) -> Result<Command, Error> {
+    if buffer.is_empty() {
+        return Err(Error::msg("Empty command. Nothing in received buffer."));
+    }
+
+    let op_code = buffer[0];
+    let payload = &buffer[1..];
+
+    match MlsOperation::try_from(op_code).map_err(|_| "Invalid opcode").unwrap() {
+        MlsOperation::Add => Ok(Command::Add {
+                        key_package_bytes: payload.to_vec(),
+            }),
+        MlsOperation::AddPending => Ok(Command::AddPending),
+        MlsOperation::Remove => {
+                if payload.len() < 4 {
+                    return Err(Error::msg("Invalid Remove payload. Should be u32 (4 bytes long)"))
+                }
+                let index = u32::from_be_bytes(payload[..4].try_into().unwrap());
+                Ok(Command::Remove { index })
+            }
+        MlsOperation::Update => Ok(Command::Update),
+        MlsOperation::RetrieveRatchetTree => Ok(Command::RetrieveRatchetTree),
+        MlsOperation::ApplicationMsg => Ok(Command::ApplicationMsg {
+                data: payload.to_vec(),
+            }),
+        MlsOperation::BroadcastKeyPackage => todo!(),
+        }
+}
+
+pub fn serialize_command(cmd: &Command) -> Vec<u8> {
+    match cmd {
+        Command::Add { key_package_bytes } => {
+            let mut buf = vec![MlsOperation::Add as u8];
+            buf.extend_from_slice(key_package_bytes);
+            buf
+        }
+        Command::Remove { index } => {
+            let mut buf = vec![MlsOperation::Remove as u8];
+            buf.extend(&index.to_be_bytes());
+            buf
+        }
+        Command::RetrieveRatchetTree => vec![MlsOperation::RetrieveRatchetTree as u8],
+        Command::Update => { vec![MlsOperation::Update as u8] },
+        Command::AddPending => { vec![MlsOperation::AddPending as u8]}, 
+        Command::ApplicationMsg { data } => {
+            let mut buf = vec![MlsOperation::ApplicationMsg as u8];
+            buf.extend_from_slice(data);
+            buf
+        }
+    }
+}
+
+
 
 pub struct Router {
     mls_group_handler: MlsGroupHandler,
@@ -84,9 +170,40 @@ impl Router {
                     Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; MLS_MSG_BUFFER_SIZE])>
                 } => {
                     log::info!("Application → MLS: {} bytes from {}", size, src);
-                    let data = self.mls_group_handler.process_outgoing_application_message(&buf[..size])
+                    let command = parse_command(&buf[..size]);
+                    match command {
+                        Ok(Command::Add{key_package_bytes})=>{
+                            let(group_commit,welcome)=self.mls_group_handler.add_new_member_from_bytes(&key_package_bytes);
+                            tx_ds_socket.send_to(group_commit.tls_serialize_detached().expect("Error serializing Group Commit").as_slice(), TX_DS_ADDR).await?;
+                            tx_ds_socket.send_to(welcome.tls_serialize_detached().expect("Error serializing Welcome").as_slice(), TX_DS_ADDR).await?;
+                        }
+                        Ok(Command::AddPending) => {
+                            let out = self.mls_group_handler.add_pending_key_packages()?;
+                            if !out.is_empty() {
+                                for (group_commit, welcome) in out {
+                                    tx_ds_socket.send_to(group_commit.tls_serialize_detached().expect("Error serializing Group Commit").as_slice(), TX_DS_ADDR).await?;
+                                    tx_ds_socket.send_to(welcome.tls_serialize_detached().expect("Error serializing Welcome").as_slice(), TX_DS_ADDR).await?;
+                                }
+                            }
+                        }
+                        Ok(Command::Remove{index}) => {
+                            let (commit, _welcome_option) = self.mls_group_handler.remove_member(LeafNodeIndex::new(index));
+                            tx_ds_socket.send_to(commit.tls_serialize_detached().expect("Error serializing Group Commit").as_slice(), TX_DS_ADDR).await?;
+
+                        },
+                        Ok(Command::Update) => {
+                            let (commit, _welcome_option) = self.mls_group_handler.update_self();
+                            tx_ds_socket.send_to(commit.tls_serialize_detached().expect("Error serializing Group Commit").as_slice(), TX_DS_ADDR).await?;
+
+                        },
+                        Ok(Command::RetrieveRatchetTree) => { todo!()},
+                        Ok(Command::ApplicationMsg{data}) => {
+                            let out = self.mls_group_handler.process_outgoing_application_message(&data)
                         .expect("Error handling outgoing application data.");
-                    tx_network_socket.send_to(data.as_slice(), "239.255.0.1:5001").await?;
+                        tx_network_socket.send_to(out.as_slice(), "239.255.0.1:5001").await?;
+                        },
+                        Err(_) => todo!(),
+                                            }
                 }
 
                 // Network → MLS (Multicast RX)
