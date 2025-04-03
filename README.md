@@ -51,7 +51,7 @@ The containers are built through the `Dockerfile`, an their individual names and
 2. Run `docker-compose build`, (if you have not built the images yet or have made changes to the Dockerfile). 
 3. Start the containers and the netwwork with `docker-compose up -d`
 4. Verify tht containers and the netowrk are running correctly with `docker ps`
-4. Attach to one of the containers using `docker exec -it node2 bash`
+4. Attach to one of the containers using `docker exec --privileged -it node2 bash`
 5. Start Corosync (in the container or wherever it is required):  `corosync`. (Add flag `-f` to run in foreground, which will show you Corosync output in real-time.)   
  
 
