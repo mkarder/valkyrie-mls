@@ -1,11 +1,36 @@
-use openmls::prelude::*;
-use openmls_rust_crypto::OpenMlsRustCrypto;
-use openmls_basic_credential::SignatureKeyPair;
+use anyhow::{Error, Ok, Result};
+use tokio::{net::UdpSocket, select};
+use clap::{Parser, Subcommand};
 
-use tls_codec::Serialize;
-use tokio::net::UdpSocket;
-use anyhow::{Result, Error};
+#[derive(Parser)]
+#[command(name = "mlsctl", version, about = "Control your MLS network")]
+pub struct Cli {
+    #[arg(short, long, help = "Destination IP:port (e.g. 10.10.0.2:8000)")]
+    ip: String,
 
+    #[command(subcommand)]
+    command: MlsCliCommand,
+}
+
+#[derive(Subcommand)]
+pub enum MlsCliCommand {
+    Add {
+        #[arg(short, long, help = "Path to KeyPackage file")]
+        file: String,
+    },
+    Remove {
+        #[arg(short, long, help = "Leaf index to remove")]
+        index: u32,
+    },
+    Update,
+    RetrieveRatchetTree,
+    AddPending,
+    ApplicationMsg {
+        #[arg(short, long, help = "Message payload")]
+        data: String,
+    },
+    BroadcastKeyPackage,
+}
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,99 +127,33 @@ pub fn serialize_command(cmd: &Command) -> Vec<u8> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Setup MLS group configuration
-    let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
-    let provider = &OpenMlsRustCrypto::default();
+    env_logger::init();
+    let cli = Cli::parse();
 
-    // Bob
-    let (bob_cred, bob_signer) = generate_credential_with_key(
-        "Bob".into(),
-        CredentialType::Basic,
-        ciphersuite.signature_algorithm(),
-        provider,
-    );
-    let bob_key_package = generate_key_package(
-        ciphersuite,
-        provider,
-        &bob_signer,
-        bob_cred.clone(),
-    );
-
-
-    let ds_addr = "127.0.0.1:6000";
-    let app : &str = "127.0.0.1:7000";
-
-    // Bind to an available UDP port on the local machine
+    log::info!("Sending command to {}", cli.ip);
     let socket = UdpSocket::bind("0.0.0.0:0").await?;
 
+    let command = match &cli.command {
+        MlsCliCommand::Add { file } => {
+            let key_package_bytes = tokio::fs::read(file).await?;
+            Command::Add { key_package_bytes }
+        }
+        MlsCliCommand::Remove { index } => Command::Remove { index: *index },
+        MlsCliCommand::Update => Command::Update,
+        MlsCliCommand::RetrieveRatchetTree => Command::RetrieveRatchetTree,
+        MlsCliCommand::AddPending => Command::AddPending,
+        MlsCliCommand::ApplicationMsg { data } => {
+            Command::ApplicationMsg { data: data.clone().into_bytes() }
+        }
+        MlsCliCommand::BroadcastKeyPackage => Command::BroadcastKeyPackage,
+    };
 
-    // 1. Send KeyPackage to a node over UDP
-    // 2. 
-
-    // Test sending arbitrary payload
-    match socket.send_to("Test".as_bytes(), app).await {
-        Ok(size) => println!("✅ Test application message sent successfully! ({} bytes)", size),
-        Err(e) => println!("❌ Failed to application send test message: {}", e),
-    }
-
-    
-    // Send KeyPackage to network over UDP
-    let msg_out = MlsMessageOut::from(bob_key_package.key_package().clone())
-        .tls_serialize_detached()
-        .expect("Error serializing KeyPackage");
-    
-        
-    match socket.send_to(&msg_out, ds_addr).await {
-        Ok(size) => println!("✅ KeyPackageBundle sent successfully as DS! ({} bytes)", size),
-        Err(e) => println!("❌ Failed to send KeyPackageBundle: {}", e),
-    }
+    let bytes = serialize_command(&command);
+    socket.send_to(&bytes, &cli.ip).await?;
+    log::info!("Command sent!");
 
     Ok(())
-
 }
 
-fn send_keypackage() {
-    
-}
 
-fn send_welcome() {
 
-}
-
-fn send_aplication_message() {
-
-}
-
-fn generate_credential_with_key(
-    identity: Vec<u8>,
-    credential_type: CredentialType,
-    signature_algorithm: SignatureScheme,
-    provider: &impl OpenMlsProvider,
-) -> (CredentialWithKey, SignatureKeyPair) {
-    let _ = credential_type;
-    let credential = BasicCredential::new(identity);
-    let signature_keys =
-        SignatureKeyPair::new(signature_algorithm)
-            .expect("Error generating a signature key pair.");
-    signature_keys
-        .store(provider.storage())
-        .expect("Error storing signature keys.");
-    (
-        CredentialWithKey {
-            credential: credential.into(),
-            signature_key: signature_keys.public().into(),
-        },
-        signature_keys,
-    )
-}
-
-fn generate_key_package(
-    ciphersuite: Ciphersuite,
-    provider: &impl OpenMlsProvider,
-    signer: &SignatureKeyPair,
-    credential_with_key: CredentialWithKey,
-) -> KeyPackageBundle {
-    KeyPackage::builder()
-        .build(ciphersuite, provider, signer, credential_with_key)
-        .unwrap()
-}

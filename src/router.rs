@@ -2,7 +2,7 @@ use crate::mls_group_handler::MlsSwarmLogic;
 use crate::MlsGroupHandler;
 use std::net::SocketAddr;
 use openmls::prelude::LeafNodeIndex;
-use tls_codec::{Serialize, Deserialize};
+use tls_codec::Serialize;
 use tokio::net::UdpSocket;
 use tokio::{select, signal};
 use anyhow::{Error, Result};
@@ -10,6 +10,10 @@ use std::result::Result::Ok;
 
 
 // TODO: Should be fetched from a configuration file
+const NODE_IP : &str = "10.10.0.2";
+const RX_CMD_ADDR : &str = "10.10.0.2:8000";
+
+
 const RX_MULTICAST_ADDR :&str = "239.255.0.1"; // NB!: No port specifcation, use SOCKET const
 
 const RX_DS_ADDR: &str = "127.0.0.1:6000";
