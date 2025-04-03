@@ -131,7 +131,7 @@ impl Router {
 
     pub async fn run_main_loop(&mut self) -> Result<()> {
         let rx_ds_socket = UdpSocket::bind(RX_DS_ADDR).await?;
-        let rx_app_socket = UdpSocket::bind(RX_APPLICATION_ADDR).await?;
+        let rx_app_socket = UdpSocket::bind(RX_CMD_ADDR).await?;
         
         let rx_network_socket = UdpSocket::bind("0.0.0.0:5000").await?; // Multicast RX
         rx_network_socket.join_multicast_v4(

@@ -1,4 +1,4 @@
-use anyhow::{Error, Ok, Result};
+use anyhow::{Error, Result};
 use tokio::{net::UdpSocket, select};
 use clap::{Parser, Subcommand};
 
@@ -125,35 +125,81 @@ pub fn serialize_command(cmd: &Command) -> Vec<u8> {
     }
 }
 
+/*
+How to:
+
+*/
+
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    use tokio::{signal, io::{self, AsyncBufReadExt, BufReader}};
+    use std::sync::Arc;
+
     env_logger::init();
-    let cli = Cli::parse();
+    log::info!("MLS Control CLI started. Type commands or Ctrl-C to exit.");
 
-    log::info!("Sending command to {}", cli.ip);
-    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+    let stdin = BufReader::new(io::stdin());
+    let mut lines = stdin.lines();
 
-    let command = match &cli.command {
-        MlsCliCommand::Add { file } => {
-            let key_package_bytes = tokio::fs::read(file).await?;
-            Command::Add { key_package_bytes }
+    loop {
+        select! {
+            _ = signal::ctrl_c() => {
+                log::info!("Shutdown requested. Exiting.");
+                break;
+            }
+
+            line = lines.next_line() => {
+                match line {
+                    Ok(Some(input)) => {
+                        if let Err(e) = handle_input(input.trim(), &socket).await {
+                            log::error!("Failed to process command: {}", e);
+                        }
+                    }
+                    Ok(None) => break, // EOF
+                    Err(e) => {
+                        log::error!("Error reading input: {}", e);
+                        break;
+                    }
+                }
+            }
         }
-        MlsCliCommand::Remove { index } => Command::Remove { index: *index },
-        MlsCliCommand::Update => Command::Update,
-        MlsCliCommand::RetrieveRatchetTree => Command::RetrieveRatchetTree,
-        MlsCliCommand::AddPending => Command::AddPending,
-        MlsCliCommand::ApplicationMsg { data } => {
-            Command::ApplicationMsg { data: data.clone().into_bytes() }
-        }
-        MlsCliCommand::BroadcastKeyPackage => Command::BroadcastKeyPackage,
-    };
-
-    let bytes = serialize_command(&command);
-    socket.send_to(&bytes, &cli.ip).await?;
-    log::info!("Command sent!");
+    }
 
     Ok(())
 }
 
+async fn handle_input(input: &str, socket: &UdpSocket) -> Result<()> {
+    let mut parts = input.split_whitespace();
+    let ip = parts.next().ok_or_else(|| Error::msg("Missing IP address"))?;
+    let op = parts.next().ok_or_else(|| Error::msg("Missing command"))?;
 
+    let command = match op {
+        "broadcast-keypackage" => Command::BroadcastKeyPackage,
+        "add-pending" => Command::AddPending,
+        "retrieve-ratchet-tree" => Command::RetrieveRatchetTree,
+        "update" => Command::Update,
+        "remove" => {
+            let index = parts.next().ok_or_else(|| Error::msg("Missing index for remove"))?;
+            let index = index.parse::<u32>()?;
+            Command::Remove { index }
+        }
+        "application-msg" => {
+            let data = parts.collect::<Vec<_>>().join(" ");
+            Command::ApplicationMsg { data: data.into_bytes() }
+        }
+        "add" => {
+            let file_path = parts.next().ok_or_else(|| Error::msg("Missing file path for add"))?;
+            let key_package_bytes = tokio::fs::read(file_path).await?;
+            Command::Add { key_package_bytes }
+        }
+        _ => return Err(Error::msg("Unknown command")),
+    };
 
+    let buf = serialize_command(&command);
+    socket.send_to(&buf, ip).await?;
+    log::info!("✅ Sent {op} to {ip}");
+
+    Ok(())
+}
