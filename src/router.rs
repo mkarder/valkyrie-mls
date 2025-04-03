@@ -58,6 +58,7 @@ pub enum Command {
     Update,
     RetrieveRatchetTree,
     ApplicationMsg { data: Vec<u8> },
+    BroadcastKeyPackage,
 }
 
 pub fn parse_command(buffer: &[u8]) -> Result<Command, Error> {
@@ -85,30 +86,31 @@ pub fn parse_command(buffer: &[u8]) -> Result<Command, Error> {
         MlsOperation::ApplicationMsg => Ok(Command::ApplicationMsg {
                 data: payload.to_vec(),
             }),
-        MlsOperation::BroadcastKeyPackage => todo!(),
+        MlsOperation::BroadcastKeyPackage => Ok(Command::BroadcastKeyPackage),
         }
 }
 
 pub fn serialize_command(cmd: &Command) -> Vec<u8> {
     match cmd {
         Command::Add { key_package_bytes } => {
-            let mut buf = vec![MlsOperation::Add as u8];
-            buf.extend_from_slice(key_package_bytes);
-            buf
-        }
+                        let mut buf = vec![MlsOperation::Add as u8];
+                        buf.extend_from_slice(key_package_bytes);
+                        buf
+            }
         Command::Remove { index } => {
-            let mut buf = vec![MlsOperation::Remove as u8];
-            buf.extend(&index.to_be_bytes());
-            buf
-        }
+                let mut buf = vec![MlsOperation::Remove as u8];
+                buf.extend(&index.to_be_bytes());
+                buf
+            }
         Command::RetrieveRatchetTree => vec![MlsOperation::RetrieveRatchetTree as u8],
         Command::Update => { vec![MlsOperation::Update as u8] },
-        Command::AddPending => { vec![MlsOperation::AddPending as u8]}, 
+        Command::AddPending => { vec![MlsOperation::AddPending as u8]},
         Command::ApplicationMsg { data } => {
-            let mut buf = vec![MlsOperation::ApplicationMsg as u8];
-            buf.extend_from_slice(data);
-            buf
-        }
+                let mut buf = vec![MlsOperation::ApplicationMsg as u8];
+                buf.extend_from_slice(data);
+                buf
+            }
+        Command::BroadcastKeyPackage => vec![MlsOperation::BroadcastKeyPackage as u8],
     }
 }
 
@@ -202,6 +204,10 @@ impl Router {
                         .expect("Error handling outgoing application data.");
                         tx_network_socket.send_to(out.as_slice(), "239.255.0.1:5001").await?;
                         },
+                        Ok(Command::BroadcastKeyPackage) => {
+                            let key_package = self.mls_group_handler.get_key_package();
+                            tx_ds_socket.send_to(&key_package.tls_serialize_detached().expect("Error serializing KeyPackage"), TX_DS_ADDR).await?;
+                        }
                         Err(_) => todo!(),
                                             }
                 }

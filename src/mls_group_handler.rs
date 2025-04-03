@@ -91,6 +91,12 @@ impl MlsGroupHandler {
         MlsGroup::load(self.provider.storage(), &GroupId::from_slice(&group_id))
             .expect("Error loading group")
     }
+
+    pub fn get_key_package(&self) -> MlsMessageOut {
+        MlsMessageOut::from(self.key_package
+            .key_package()
+            .clone())
+    }
 }
 
 impl MlsSwarmLogic for MlsGroupHandler {
