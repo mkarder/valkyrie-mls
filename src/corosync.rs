@@ -90,5 +90,13 @@ pub fn receive_message(handle: &Handle) -> Result<(), Box<dyn std::error::Error>
     if let Err(e) = cpg::dispatch(*handle, rust_corosync::DispatchFlags::Blocking) {
         eprintln!("Dispatch error: {}", e);
     }
+    log::info!("Got eggs");
+
+    Ok(())
+}
+
+pub fn finalize(handle: &Handle) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    cpg::finalize(*handle)?;
+    log::info!("[Corosync] Finalized CPG handle.");
     Ok(())
 }

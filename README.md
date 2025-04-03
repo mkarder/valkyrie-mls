@@ -101,5 +101,5 @@ The Corosync process need to be run
 
 2. **Run** the compiled binary with sudo (or appropriate capabilities/permissions):
    ```bash
-   sudo ./target/debug/corosync-app
+   sudo RUST_LOG=debug ./target/debug/valkyrie-mls
    ```

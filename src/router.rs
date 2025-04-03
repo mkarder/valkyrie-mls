@@ -9,10 +9,12 @@ use std::net::SocketAddr;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::{select, signal, task};
+use std::thread;
+
 
 // TODO: Should be fetched from a configuration file
 const RX_MULTICAST_ADDR: &str = "239.255.0.1"; // NB!: No port specifcation, use SOCKET const
-//const TX_MULTICAST_ADDR: &str = "239.255.0.1";
+                                               //const TX_MULTICAST_ADDR: &str = "239.255.0.1";
 const RX_DS_ADDR: &str = "127.0.0.1:6000";
 const RX_APPLICATION_ADDR: &str = "127.0.0.1:7000";
 const TX_APPLICATION_ADDR: &str = "127.0.0.1:7001";
@@ -50,7 +52,10 @@ impl Router {
         let rx_app_socket = UdpSocket::bind(RX_APPLICATION_ADDR)
             .await
             .context("Failed to bind Application RX socket")?;
-        log::info!("Listening for Application messages on {}", RX_APPLICATION_ADDR);
+        log::info!(
+            "Listening for Application messages on {}",
+            RX_APPLICATION_ADDR
+        );
 
         let rx_network_socket = UdpSocket::bind("0.0.0.0:5000")
             .await
@@ -72,11 +77,26 @@ impl Router {
         let (tx_corosync_channel, mut rx_corosync_channel) = mpsc::channel::<Vec<u8>>(32);
         init_global_channel(tx_corosync_channel);
 
+        /*
+               // Spawn a blocking task to handle incoming Corosync messages
+               let handle_clone = self.corosync_handle.clone();
+               task::spawn_blocking(move || { //spawn_blocking
+                   receive_message(&handle_clone).expect("Error receiving message from Corosync");
+                   log::info!("Got milk");
 
-        // Spawn a blocking task to handle incoming Corosync messages
+               });
+        */
+
+
         let handle_clone = self.corosync_handle.clone();
-        task::spawn_blocking(move || {
-            receive_message(&handle_clone).expect("Error receiving message from Corosync");
+        thread::spawn(move || {
+            if let Err(e) = receive_message(&handle_clone) {
+                eprintln!("Error receiving message from Corosync: {:?}", e);
+            } else {
+                log::info!("Got milk");
+            }
+            log::info!("Got works");
+
         });
 
         loop {
@@ -99,12 +119,12 @@ impl Router {
                     log::info!("MLS → DS: {} bytes from {}", size, src);
                     let data = self.mls_group_handler
                         .process_outgoing_application_message(&buf[..size])
-                        .context("Failed to process outgoing DS message")?;              
+                        .context("Failed to process outgoing DS message")?;
                     corosync::send_message(&self.corosync_handle, &data)
                         .expect("Failed to send message through Corosync");
              }
 
-                // AppData coming in from Application, being sent to MLS_group_handler for encryption, then being sent to the Radio Network 
+                // AppData coming in from Application, being sent to MLS_group_handler for encryption, then being sent to the Radio Network
                 Ok((size, src, buf)) = async {
                     let mut buf = [0u8; 1024];
                     let (size, src) = rx_app_socket.recv_from(&mut buf).await?;
@@ -139,8 +159,14 @@ impl Router {
                 // Handle Ctrl+C (Shutdown)
                 _ = signal::ctrl_c() => {
                     println!("\n🛑 Ctrl+C detected! Shutting down gracefully...");
+                    // Finalize Corosync to unblock the blocking receive thread
+                    log::info!(" Ctrl+C detected! Shutting down gracefully...");
+                    rust_corosync::cpg::finalize(self.corosync_handle).expect("Failed to finalize Corosync");
+                    log::info!(" Finalized called");
+
                     break;
                 }
+
             }
         }
         log::info!("Router main loop exited.");
