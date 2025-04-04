@@ -2,7 +2,7 @@ use crate::corosync;
 use crate::corosync::receive_message;
 use crate::mls_group_handler::MlsSwarmLogic;
 use crate::MlsGroupHandler;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, Error};
 use once_cell::sync::OnceCell;
 use rust_corosync::cpg::Handle;
 use std::net::SocketAddr;
@@ -10,8 +10,9 @@ use openmls::prelude::LeafNodeIndex;
 use tls_codec::Serialize;
 use tokio::net::UdpSocket;
 use tokio::{select, signal};
-use anyhow::{Error, Result};
 use std::result::Result::Ok;
+use tokio::sync::mpsc;
+use std::thread;
 
 
 // TODO: Should be fetched from a configuration file
@@ -22,13 +23,10 @@ const RX_CMD_ADDR : &str = "10.10.0.2:8000";
 const RX_MULTICAST_ADDR :&str = "239.255.0.1"; // NB!: No port specifcation, use SOCKET const
 
 
-use tokio::sync::mpsc;
-use tokio::{select, signal, task};
-use std::thread;
+
 
 
 // TODO: Should be fetched from a configuration file
-const RX_MULTICAST_ADDR: &str = "239.255.0.1"; // NB!: No port specifcation, use SOCKET const
                                                //const TX_MULTICAST_ADDR: &str = "239.255.0.1";
 
 const RX_DS_ADDR: &str = "127.0.0.1:6000";
@@ -228,28 +226,22 @@ impl Router {
                 //  MLS commit messages coming from Corosync being sent to MLS_group_handler for processing
                 Some(data) = rx_corosync_channel.recv() => {
                     log::info!("Corosync → MLS: {} bytes received", data.len());
-                    match self.mls_group_handler.process_incoming_delivery_service_message(data) {
+                    match self.mls_group_handler.process_incoming_delivery_service_message(&data) {
                         Ok(Some((commit, welcome))) => {
                             corosync::send_message(&self.corosync_handle, commit.tls_serialize_detached().expect("Error serializng").as_slice())
                               .expect("Failed to send message through Corosync");
-                          corosync::send_message(&self.corosync_handle, welcome.tls_serialize_detached().expect("Error serializng").as_slice())
+                            corosync::send_message(&self.corosync_handle, welcome.tls_serialize_detached().expect("Error serializng").as_slice())
                               .expect("Failed to send message through Corosync");
                           
-                        },
+                        }
                         Ok(None) => {}
                         Err(e) => {
                             log::error!("Error processing incoming message from DS: {}", e);
                         }
                 }
+            }
 
-                // MLS commit messages coming from MLS_group_handler being sent to Corosync for ordered delivery
-                Ok((size, src, buf)) = async {
-                    let mut buf = [0u8; MLS_MSG_BUFFER_SIZE];
-                    let (size, src) = rx_ds_socket.recv_from(&mut buf).await?;
-                    Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; MLS_MSG_BUFFER_SIZE])>
-                } => {
-
-                // AppData coming in from Application, being sent to MLS_group_handler for encryption, then being sent to the Radio Network
+                // Commands and AppData coming in from CMD-socket, being sent to MLS_group_handler for processing, then being sent matched based on operation. 
 
                 Ok((size, src, buf)) = async {
                     let mut buf = [0u8; MLS_MSG_BUFFER_SIZE];
@@ -262,26 +254,32 @@ impl Router {
                     match command {
                         Ok(Command::Add{key_package_bytes})=>{
                             let(group_commit,welcome)=self.mls_group_handler.add_new_member_from_bytes(&key_package_bytes);
-                            tx_ds_socket.send_to(group_commit.tls_serialize_detached().expect("Error serializing Group Commit").as_slice(), TX_DS_ADDR).await?;
-                            tx_ds_socket.send_to(welcome.tls_serialize_detached().expect("Error serializing Welcome").as_slice(), TX_DS_ADDR).await?;
+                            corosync::send_message(&self.corosync_handle, group_commit.tls_serialize_detached().expect("Error serializng").as_slice())
+                              .expect("Failed to send message through Corosync");
+                            corosync::send_message(&self.corosync_handle, welcome.tls_serialize_detached().expect("Error serializng").as_slice())
+                              .expect("Failed to send message through Corosync");
                         }
                         Ok(Command::AddPending) => {
                             let out = self.mls_group_handler.add_pending_key_packages()?;
                             if !out.is_empty() {
                                 for (group_commit, welcome) in out {
-                                    tx_ds_socket.send_to(group_commit.tls_serialize_detached().expect("Error serializing Group Commit").as_slice(), TX_DS_ADDR).await?;
-                                    tx_ds_socket.send_to(welcome.tls_serialize_detached().expect("Error serializing Welcome").as_slice(), TX_DS_ADDR).await?;
+                                    corosync::send_message(&self.corosync_handle, group_commit.tls_serialize_detached().expect("Error serializng").as_slice())
+                                        .expect("Failed to send message through Corosync");
+                                    corosync::send_message(&self.corosync_handle, welcome.tls_serialize_detached().expect("Error serializng").as_slice())
+                                        .expect("Failed to send message through Corosync");
                                 }
                             }
                         }
                         Ok(Command::Remove{index}) => {
                             let (commit, _welcome_option) = self.mls_group_handler.remove_member(LeafNodeIndex::new(index));
-                            tx_ds_socket.send_to(commit.tls_serialize_detached().expect("Error serializing Group Commit").as_slice(), TX_DS_ADDR).await?;
+                            corosync::send_message(&self.corosync_handle, commit.tls_serialize_detached().expect("Error serializng").as_slice())
+                              .expect("Failed to send message through Corosync");
 
                         },
                         Ok(Command::Update) => {
                             let (commit, _welcome_option) = self.mls_group_handler.update_self();
-                            tx_ds_socket.send_to(commit.tls_serialize_detached().expect("Error serializing Group Commit").as_slice(), TX_DS_ADDR).await?;
+                            corosync::send_message(&self.corosync_handle, commit.tls_serialize_detached().expect("Error serializng").as_slice())
+                              .expect("Failed to send message through Corosync");
 
                         },
                         Ok(Command::RetrieveRatchetTree) => { todo!()},
@@ -292,7 +290,8 @@ impl Router {
                         },
                         Ok(Command::BroadcastKeyPackage) => {
                             let key_package = self.mls_group_handler.get_key_package();
-                            tx_ds_socket.send_to(&key_package.tls_serialize_detached().expect("Error serializing KeyPackage"), TX_DS_ADDR).await?;
+                            corosync::send_message(&self.corosync_handle, &key_package.tls_serialize_detached().expect("Error serializng").as_slice())
+                              .expect("Failed to send message through Corosync");
                         }
                         Err(_) => todo!(),
                                             }
@@ -331,4 +330,5 @@ impl Router {
         Ok(())
     }
 }
+
 
