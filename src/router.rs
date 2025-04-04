@@ -145,15 +145,6 @@ impl Router {
         let (tx_corosync_channel, mut rx_corosync_channel) = mpsc::channel::<Vec<u8>>(32);
         init_global_channel(tx_corosync_channel);
 
-        /*
-               // Spawn a blocking task to handle incoming Corosync messages
-               let handle_clone = self.corosync_handle.clone();
-               task::spawn_blocking(move || { //spawn_blocking
-                   receive_message(&handle_clone).expect("Error receiving message from Corosync");
-                   log::info!("Got milk");
-
-               });
-        */
 
 
         let handle_clone = self.corosync_handle.clone();
