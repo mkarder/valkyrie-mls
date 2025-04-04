@@ -6,7 +6,22 @@ use anyhow::{Context, Result};
 use once_cell::sync::OnceCell;
 use rust_corosync::cpg::Handle;
 use std::net::SocketAddr;
+use openmls::prelude::LeafNodeIndex;
+use tls_codec::Serialize;
 use tokio::net::UdpSocket;
+use tokio::{select, signal};
+use anyhow::{Error, Result};
+use std::result::Result::Ok;
+
+
+// TODO: Should be fetched from a configuration file
+const NODE_IP : &str = "10.10.0.2";
+const RX_CMD_ADDR : &str = "10.10.0.2:8000";
+
+
+const RX_MULTICAST_ADDR :&str = "239.255.0.1"; // NB!: No port specifcation, use SOCKET const
+
+
 use tokio::sync::mpsc;
 use tokio::{select, signal, task};
 use std::thread;
@@ -15,12 +30,112 @@ use std::thread;
 // TODO: Should be fetched from a configuration file
 const RX_MULTICAST_ADDR: &str = "239.255.0.1"; // NB!: No port specifcation, use SOCKET const
                                                //const TX_MULTICAST_ADDR: &str = "239.255.0.1";
+
 const RX_DS_ADDR: &str = "127.0.0.1:6000";
 const RX_APPLICATION_ADDR: &str = "127.0.0.1:7000";
 const TX_APPLICATION_ADDR: &str = "127.0.0.1:7001";
 
+
+const MLS_MSG_BUFFER_SIZE: usize = 2048; // TODO: Explain choice of this size  
+
+ 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MlsOperation {
+    Add = 0x00,
+    AddPending = 0x01,
+    Remove = 0x02,
+    Update = 0x03,
+    RetrieveRatchetTree = 0x04,
+    ApplicationMsg = 0x05,
+    BroadcastKeyPackage = 0x06,
+}
+
+impl TryFrom<u8> for MlsOperation {
+    type Error = anyhow::Error;
+
+    fn try_from(byte: u8) -> Result<Self, Error> {
+        match byte {
+            0x00 => Ok(MlsOperation::Add),
+            0x01 => Ok(MlsOperation::AddPending),
+            0x02 => Ok(MlsOperation::Remove),
+            0x03 => Ok(MlsOperation::Update),
+            0x04 => Ok(MlsOperation::RetrieveRatchetTree),
+            0x05 => Ok(MlsOperation::ApplicationMsg),
+            0x06 => Ok(MlsOperation::BroadcastKeyPackage),
+            _ => Err(Error::msg("Invalid MlsOperation byte")),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum Command {
+    Add { key_package_bytes: Vec<u8> },
+    AddPending ,
+    Remove { index: u32 },
+    Update,
+    RetrieveRatchetTree,
+    ApplicationMsg { data: Vec<u8> },
+    BroadcastKeyPackage,
+}
+
+pub fn parse_command(buffer: &[u8]) -> Result<Command, Error> {
+    if buffer.is_empty() {
+        return Err(Error::msg("Empty command. Nothing in received buffer."));
+    }
+
+    let op_code = buffer[0];
+    let payload = &buffer[1..];
+
+    match MlsOperation::try_from(op_code).map_err(|_| "Invalid opcode").unwrap() {
+        MlsOperation::Add => Ok(Command::Add {
+                        key_package_bytes: payload.to_vec(),
+            }),
+        MlsOperation::AddPending => Ok(Command::AddPending),
+        MlsOperation::Remove => {
+                if payload.len() < 4 {
+                    return Err(Error::msg("Invalid Remove payload. Should be u32 (4 bytes long)"))
+                }
+                let index = u32::from_be_bytes(payload[..4].try_into().unwrap());
+                Ok(Command::Remove { index })
+            }
+        MlsOperation::Update => Ok(Command::Update),
+        MlsOperation::RetrieveRatchetTree => Ok(Command::RetrieveRatchetTree),
+        MlsOperation::ApplicationMsg => Ok(Command::ApplicationMsg {
+                data: payload.to_vec(),
+            }),
+        MlsOperation::BroadcastKeyPackage => Ok(Command::BroadcastKeyPackage),
+        }
+}
+
+pub fn serialize_command(cmd: &Command) -> Vec<u8> {
+    match cmd {
+        Command::Add { key_package_bytes } => {
+                        let mut buf = vec![MlsOperation::Add as u8];
+                        buf.extend_from_slice(key_package_bytes);
+                        buf
+            }
+        Command::Remove { index } => {
+                let mut buf = vec![MlsOperation::Remove as u8];
+                buf.extend(&index.to_be_bytes());
+                buf
+            }
+        Command::RetrieveRatchetTree => vec![MlsOperation::RetrieveRatchetTree as u8],
+        Command::Update => { vec![MlsOperation::Update as u8] },
+        Command::AddPending => { vec![MlsOperation::AddPending as u8]},
+        Command::ApplicationMsg { data } => {
+                let mut buf = vec![MlsOperation::ApplicationMsg as u8];
+                buf.extend_from_slice(data);
+                buf
+            }
+        Command::BroadcastKeyPackage => vec![MlsOperation::BroadcastKeyPackage as u8],
+    }
+}
+
+
 //Global transmission channel for Corosync
 pub static TX_CHANNEL: OnceCell<mpsc::Sender<Vec<u8>>> = OnceCell::new();
+
 
 pub fn init_global_channel(tx: mpsc::Sender<Vec<u8>>) {
     TX_CHANNEL
@@ -48,7 +163,15 @@ impl Router {
             .await
             .context("Failed to bind DS RX socket")?;
         log::info!("Listening for Delivery Service messages on {}", RX_DS_ADDR);
-
+        
+        let rx_cmd_socket = UdpSocket::bind(RX_CMD_ADDR)
+            .await
+            .context("Failed to bind Command RX socket")?;
+        log::info!(
+            "Listening for Application messages on {}",
+            RX_APPLICATION_ADDR
+        );  
+      
         let rx_app_socket = UdpSocket::bind(RX_APPLICATION_ADDR)
             .await
             .context("Failed to bind Application RX socket")?;
@@ -105,46 +228,81 @@ impl Router {
                 //  MLS commit messages coming from Corosync being sent to MLS_group_handler for processing
                 Some(data) = rx_corosync_channel.recv() => {
                     log::info!("Corosync → MLS: {} bytes received", data.len());
-                    self.mls_group_handler
-                        .process_incoming_delivery_service_message(&data)
-                        .context("Failed to process message from Corosync")?;
+                    match self.mls_group_handler.process_incoming_delivery_service_message(data) {
+                        Ok(Some((commit, welcome))) => {
+                            corosync::send_message(&self.corosync_handle, commit.tls_serialize_detached().expect("Error serializng").as_slice())
+                              .expect("Failed to send message through Corosync");
+                          corosync::send_message(&self.corosync_handle, welcome.tls_serialize_detached().expect("Error serializng").as_slice())
+                              .expect("Failed to send message through Corosync");
+                          
+                        },
+                        Ok(None) => {}
+                        Err(e) => {
+                            log::error!("Error processing incoming message from DS: {}", e);
+                        }
                 }
 
                 // MLS commit messages coming from MLS_group_handler being sent to Corosync for ordered delivery
                 Ok((size, src, buf)) = async {
-                    let mut buf = [0u8; 1024];
+                    let mut buf = [0u8; MLS_MSG_BUFFER_SIZE];
                     let (size, src) = rx_ds_socket.recv_from(&mut buf).await?;
-                    Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; 1024])>
+                    Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; MLS_MSG_BUFFER_SIZE])>
                 } => {
-                    log::info!("MLS → DS: {} bytes from {}", size, src);
-                    let data = self.mls_group_handler
-                        .process_outgoing_application_message(&buf[..size])
-                        .context("Failed to process outgoing DS message")?;
-                    corosync::send_message(&self.corosync_handle, &data)
-                        .expect("Failed to send message through Corosync");
-             }
 
                 // AppData coming in from Application, being sent to MLS_group_handler for encryption, then being sent to the Radio Network
+
                 Ok((size, src, buf)) = async {
-                    let mut buf = [0u8; 1024];
-                    let (size, src) = rx_app_socket.recv_from(&mut buf).await?;
-                    Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; 1024])>
+                    let mut buf = [0u8; MLS_MSG_BUFFER_SIZE];
+                    let (size, src) = rx_cmd_socket.recv_from(&mut buf).await?;
+                    Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; MLS_MSG_BUFFER_SIZE])>
                 } => {
-                    log::info!("Application → MLS: {} bytes from {}", size, src);
-                    let data = self.mls_group_handler
-                        .process_outgoing_application_message(&buf[..size])
-                        .context("Failed to process outgoing app message")?;
-                    tx_network_socket
-                        .send_to(data.as_slice(), "239.255.0.1:5001")
-                        .await
-                        .context("Failed to send AppData as multicast packet to radio network")?;
+                    log::info!("CMD → MLS: {} bytes from {}", size, src);
+
+                    let command = parse_command(&buf[..size]);
+                    match command {
+                        Ok(Command::Add{key_package_bytes})=>{
+                            let(group_commit,welcome)=self.mls_group_handler.add_new_member_from_bytes(&key_package_bytes);
+                            tx_ds_socket.send_to(group_commit.tls_serialize_detached().expect("Error serializing Group Commit").as_slice(), TX_DS_ADDR).await?;
+                            tx_ds_socket.send_to(welcome.tls_serialize_detached().expect("Error serializing Welcome").as_slice(), TX_DS_ADDR).await?;
+                        }
+                        Ok(Command::AddPending) => {
+                            let out = self.mls_group_handler.add_pending_key_packages()?;
+                            if !out.is_empty() {
+                                for (group_commit, welcome) in out {
+                                    tx_ds_socket.send_to(group_commit.tls_serialize_detached().expect("Error serializing Group Commit").as_slice(), TX_DS_ADDR).await?;
+                                    tx_ds_socket.send_to(welcome.tls_serialize_detached().expect("Error serializing Welcome").as_slice(), TX_DS_ADDR).await?;
+                                }
+                            }
+                        }
+                        Ok(Command::Remove{index}) => {
+                            let (commit, _welcome_option) = self.mls_group_handler.remove_member(LeafNodeIndex::new(index));
+                            tx_ds_socket.send_to(commit.tls_serialize_detached().expect("Error serializing Group Commit").as_slice(), TX_DS_ADDR).await?;
+
+                        },
+                        Ok(Command::Update) => {
+                            let (commit, _welcome_option) = self.mls_group_handler.update_self();
+                            tx_ds_socket.send_to(commit.tls_serialize_detached().expect("Error serializing Group Commit").as_slice(), TX_DS_ADDR).await?;
+
+                        },
+                        Ok(Command::RetrieveRatchetTree) => { todo!()},
+                        Ok(Command::ApplicationMsg{data}) => {
+                            let out = self.mls_group_handler.process_outgoing_application_message(&data)
+                        .expect("Error handling outgoing application data.");
+                        tx_network_socket.send_to(out.as_slice(), "239.255.0.1:5001").await?;
+                        },
+                        Ok(Command::BroadcastKeyPackage) => {
+                            let key_package = self.mls_group_handler.get_key_package();
+                            tx_ds_socket.send_to(&key_package.tls_serialize_detached().expect("Error serializing KeyPackage"), TX_DS_ADDR).await?;
+                        }
+                        Err(_) => todo!(),
+                                            }
                 }
 
                 // Encrypted AppData coming in from radio network, being sent to MLS_group_handler for decryption, then forwarded to Application
                 Ok((size, src, buf)) = async {
-                    let mut buf = [0u8; 1024];
+                    let mut buf = [0u8; MLS_MSG_BUFFER_SIZE];
                     let (size, src) = rx_network_socket.recv_from(&mut buf).await?;
-                    Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; 1024])>
+                    Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; MLS_MSG_BUFFER_SIZE])>
                 } => {
                     log::info!("Network → MLS: {} bytes from {}", size, src);
                     let data = self.mls_group_handler
@@ -173,3 +331,4 @@ impl Router {
         Ok(())
     }
 }
+
