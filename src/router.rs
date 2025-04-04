@@ -16,23 +16,14 @@ use std::thread;
 
 
 // TODO: Should be fetched from a configuration file
-const NODE_IP : &str = "10.10.0.2";
-const RX_CMD_ADDR : &str = "10.10.0.2:8000";
-
-
+const RX_CMD_ADDR : &str = "10.10.0.1:8000";
 const RX_MULTICAST_ADDR :&str = "239.255.0.1"; // NB!: No port specifcation, use SOCKET const
-
-
-
-
 
 // TODO: Should be fetched from a configuration file
                                                //const TX_MULTICAST_ADDR: &str = "239.255.0.1";
-
 const RX_DS_ADDR: &str = "127.0.0.1:6000";
 const RX_APPLICATION_ADDR: &str = "127.0.0.1:7000";
 const TX_APPLICATION_ADDR: &str = "127.0.0.1:7001";
-
 
 const MLS_MSG_BUFFER_SIZE: usize = 2048; // TODO: Explain choice of this size  
 
@@ -157,26 +148,14 @@ impl Router {
 
     pub async fn run_main_loop(&mut self) -> Result<()> {
         // Bind UDP sockets
-        let rx_ds_socket = UdpSocket::bind(RX_DS_ADDR)
-            .await
-            .context("Failed to bind DS RX socket")?;
-        log::info!("Listening for Delivery Service messages on {}", RX_DS_ADDR);
         
         let rx_cmd_socket = UdpSocket::bind(RX_CMD_ADDR)
             .await
             .context("Failed to bind Command RX socket")?;
         log::info!(
-            "Listening for Application messages on {}",
-            RX_APPLICATION_ADDR
+            "Listening for command messages on {}",
+            RX_CMD_ADDR
         );  
-      
-        let rx_app_socket = UdpSocket::bind(RX_APPLICATION_ADDR)
-            .await
-            .context("Failed to bind Application RX socket")?;
-        log::info!(
-            "Listening for Application messages on {}",
-            RX_APPLICATION_ADDR
-        );
 
         let rx_network_socket = UdpSocket::bind("0.0.0.0:5000")
             .await
