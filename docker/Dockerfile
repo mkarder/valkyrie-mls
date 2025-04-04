@@ -1,31 +1,17 @@
-# This Dockerfile defines the basic container needed for a swarm node.
-# This includes basic network tools (ping, tc, etc.), 
-# Rust and Open MLS for MLS operations,
-# as well as MGEN and C++ for message generation. 
-
-# File: Dockerfile
-FROM ubuntu:latest
+# ---------------------------------------------------------
+# Stage 1: Build the Rust application
+# ---------------------------------------------------------
+FROM ubuntu:latest AS builder
 
 # Set environment variables for non-interactive installations
 ENV DEBIAN_FRONTEND=noninteractive
 
-ARG NODE_NAME
-ARG NODE_IP
-
-# Define build arguments
-ENV NODE_NAME=$NODE_NAME
-ENV NODE_IP=$NODE_IP
-
-
-# Install required tools and dependencies
+# Install build dependencies for Rust and any additional tools needed at build-time
 RUN apt-get update && apt-get install -y \
-    iputils-ping \
-    iproute2 \
     build-essential \
     git \
     wget \
     curl \
-    iperf3 \
     software-properties-common \
     corosync \    
     libcpg-dev \
@@ -33,61 +19,65 @@ RUN apt-get update && apt-get install -y \
     libvotequorum-dev \
     libcfg-dev \ 
     libcmap-dev \
-    libcorosync-common-dev \	
-    nano \
+    libcorosync-common-dev \
     && apt-get clean
 
-###   Corosync   ###
-# Copy configuration files
-COPY corosync.conf /etc/corosync/corosync.conf.template
-
-# Replace placeholders in 'corosync.conf'
-RUN sed "s/{{NODE_IP}}/$NODE_IP/" /etc/corosync/corosync.conf.template > /etc/corosync/corosync.conf
-
-#Expose necessary ports
-EXPOSE 5404/udp 5405/udp
-
-# Install Rust
+# Install Rust (cargo and rustc)
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Clone and build MGEN with Protolib
-#RUN git clone https://github.com/USNavalResearchLaboratory/mgen.git /opt/mgen \
-#    && cd /opt/mgen \
-#    && git submodule update --init \
-#    && cd makefiles \
-#    && make -f Makefile.linux \
-#    && make -f Makefile.linux install \
-#    && cd / \
-#    && rm -rf /opt/mgen
+# Set up a working directory for building the Rust application
+WORKDIR /app
 
-# Set up Rust working directory 
-WORKDIR /root
+# Copy your Rust files (Cargo.toml, Cargo.lock, src/)
+COPY ../Cargo.toml .
+COPY ../src ./src
 
-### RUST APP
-#Copy Rust project
-COPY corosync_rust/ .
+# Build in release mode (adjust if you use debug mode or other profiles)
+RUN cargo build
 
-# Build the Rust project 
-RUN cargo build --release
+# ---------------------------------------------------------
+# Stage 2: Final runtime environment
+# ---------------------------------------------------------
+FROM ubuntu:latest
 
-# Install OpenMLS
-RUN git clone https://github.com/openmls/openmls.git
+# Set environment variables for non-interactive installations
+ENV DEBIAN_FRONTEND=noninteractive
 
-# install Valkyrie-MLS
-RUN git clone https://github.com/mkarder/valkyrie-mls.git
+ARG NODE_NAME
+ARG NODE_IP
+ENV NODE_NAME=$NODE_NAME
+ENV NODE_IP=$NODE_IP
 
-# Cleanup
-RUN apt-get remove --purge -y software-properties-common && apt-get autoremove -y
+# Install only the packages needed at runtime
+RUN apt-get update && apt-get install -y \
+    iputils-ping \
+    iproute2 \
+    iperf3 \
+    corosync \
+    nano \
+    sudo \ 
+    && apt-get clean
 
-# Copy the entrypoint script into the container
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh 
+# Corosync setup
+COPY docker/corosync.conf /etc/corosync/corosync.conf.template
 
-#Set the entrypoint to the script
+# Replace placeholders in the Corosync config
+RUN sed "s/{{NODE_IP}}/$NODE_IP/" /etc/corosync/corosync.conf.template > /etc/corosync/corosync.conf
+
+# Expose Corosync ports
+EXPOSE 5404/udp 5405/udp
+
+# Copy the entrypoint script
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Copy the compiled Rust binary from the builder stage
+# (Adjust the path and binary name if your actual target differs)
+COPY --from=builder /app/target/debug/valkyrie-mls valkyrie-mls
+
+# Set the entrypoint to the script
 ENTRYPOINT ["/entrypoint.sh"]
 
-#Default command if no arguments are provided
+# Default command if no arguments are provided
 CMD ["bash"]
-
-

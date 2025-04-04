@@ -1,5 +1,6 @@
 mod mls_group_handler;
 mod router;
+mod corosync;
 
 use mls_group_handler::MlsGroupHandler;
 use router::Router;
@@ -15,5 +16,7 @@ async fn main() -> Result<()>{
     let mut router = Router::new(mls_group_handler);
     router.run_main_loop().await?;
     
+    log::info!("Stopping MLS Valkyrie...");
+
     Ok(())
 }

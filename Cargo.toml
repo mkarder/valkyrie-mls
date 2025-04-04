@@ -16,3 +16,6 @@ anyhow = "1.0"
 log = "0.4.26"
 env_logger = "0.11.7"
 clap = { version = "4.4", features = ["derive"] }
+rust-corosync = "0.2.4"
+once_cell = "1.21.3"
+
