@@ -14,17 +14,9 @@ use std::result::Result::Ok;
 use tokio::sync::mpsc;
 use std::thread;
 
-
-// TODO: Should be fetched from a configuration file
 const RX_CMD_ADDR : &str = "10.10.0.1:8000";
 const RX_MULTICAST_ADDR :&str = "239.255.0.1"; // NB!: No port specifcation, use SOCKET const
-
-// TODO: Should be fetched from a configuration file
-                                               //const TX_MULTICAST_ADDR: &str = "239.255.0.1";
-const RX_DS_ADDR: &str = "127.0.0.1:6000";
-const RX_APPLICATION_ADDR: &str = "127.0.0.1:7000";
 const TX_APPLICATION_ADDR: &str = "127.0.0.1:7001";
-
 const MLS_MSG_BUFFER_SIZE: usize = 2048; // TODO: Explain choice of this size  
 
  
@@ -95,30 +87,6 @@ pub fn parse_command(buffer: &[u8]) -> Result<Command, Error> {
             }),
         MlsOperation::BroadcastKeyPackage => Ok(Command::BroadcastKeyPackage),
         }
-}
-
-pub fn serialize_command(cmd: &Command) -> Vec<u8> {
-    match cmd {
-        Command::Add { key_package_bytes } => {
-                        let mut buf = vec![MlsOperation::Add as u8];
-                        buf.extend_from_slice(key_package_bytes);
-                        buf
-            }
-        Command::Remove { index } => {
-                let mut buf = vec![MlsOperation::Remove as u8];
-                buf.extend(&index.to_be_bytes());
-                buf
-            }
-        Command::RetrieveRatchetTree => vec![MlsOperation::RetrieveRatchetTree as u8],
-        Command::Update => { vec![MlsOperation::Update as u8] },
-        Command::AddPending => { vec![MlsOperation::AddPending as u8]},
-        Command::ApplicationMsg { data } => {
-                let mut buf = vec![MlsOperation::ApplicationMsg as u8];
-                buf.extend_from_slice(data);
-                buf
-            }
-        Command::BroadcastKeyPackage => vec![MlsOperation::BroadcastKeyPackage as u8],
-    }
 }
 
 
