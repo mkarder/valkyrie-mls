@@ -95,8 +95,3 @@ pub fn receive_message(handle: &Handle) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-pub fn finalize(handle: &Handle) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    cpg::finalize(*handle)?;
-    log::info!("[Corosync] Finalized CPG handle.");
-    Ok(())
-}
