@@ -153,17 +153,6 @@ async fn main() -> Result<()> {
 
 }
 
-fn send_keypackage() {
-    
-}
-
-fn send_welcome() {
-
-}
-
-fn send_aplication_message() {
-
-}
 
 fn generate_credential_with_key(
     identity: Vec<u8>,
