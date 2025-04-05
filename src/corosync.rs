@@ -3,7 +3,7 @@ use rust_corosync::cpg;
 use rust_corosync::cpg::{Address, Guarantee, Handle, Model1Data, Model1Flags, ModelData};
 use rust_corosync::NodeId;
 
-/// Callback function for received multicast messages from Corosync 
+/// Callback function for received multicast messages from Corosync
 pub fn deliver_callback(
     _handle: &Handle,
     group_name: String,
@@ -12,9 +12,27 @@ pub fn deliver_callback(
     msg: &[u8],
     msg_len: usize,
 ) {
+    //TODO make my_nodeid a more global variable
+    let my_nodeid = std::env::var("NODE_ID")
+        .expect("NODE_ID must be set")
+        .parse::<u32>()
+        .expect("NODE_ID must be a valid u64");
+    let my_nodeid = NodeId::from(my_nodeid);
+
+    if nodeid == my_nodeid {
+        log::info!(
+            "[Corosync] Ignoring message from self (node ID: {})",
+            nodeid
+        );
+        return;
+    }
+
     log::info!(
         "[Corosync] Deliver callback: group=\"{}\", from node {:?} (pid {}), msg_len={}",
-        group_name, nodeid, pid, msg_len
+        group_name,
+        nodeid,
+        pid,
+        msg_len
     );
 
     if let Some(tx) = TX_CHANNEL.get() {
@@ -25,7 +43,6 @@ pub fn deliver_callback(
     } else {
         log::warn!("[Corosync] TX_CHANNEL not initialized, dropping message");
     }
-    
 }
 
 /// Callback for membership changes
@@ -36,7 +53,10 @@ pub fn confchg_callback(
     left_list: Vec<Address>,
     joined_list: Vec<Address>,
 ) {
-    log::info!("[Corosync] Confchg callback: Group \"{}\" membership changed.", group_name);
+    log::info!(
+        "[Corosync] Confchg callback: Group \"{}\" membership changed.",
+        group_name
+    );
     log::info!("  Current members: {} node(s)", member_list.len());
 
     if !joined_list.is_empty() {
@@ -59,8 +79,7 @@ pub fn initialize() -> cpg::Handle {
     // Initialize CPG
     let handle = cpg::initialize(&ModelData::ModelV1(model1), 0).expect("Failed to initialize CPG");
 
-    join_group(&handle, "my_test_group")
-        .expect("[Corosync] Failed to join group");
+    join_group(&handle, "my_test_group").expect("[Corosync] Failed to join group");
 
     log::info!("[Corosync] initialized with group \"my_test_group\".");
     handle
@@ -91,4 +110,3 @@ pub fn receive_message(handle: &Handle) -> Result<(), Box<dyn std::error::Error>
 
     Ok(())
 }
-

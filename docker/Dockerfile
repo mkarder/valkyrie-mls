@@ -46,8 +46,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 ARG NODE_NAME
 ARG NODE_IP
+ARG NODE_ID
 ENV NODE_NAME=$NODE_NAME
 ENV NODE_IP=$NODE_IP
+ENV NODE_ID=$NODE_ID
 
 # Install only the packages needed at runtime
 RUN apt-get update && apt-get install -y \
@@ -62,6 +64,9 @@ RUN apt-get update && apt-get install -y \
 # Corosync setup
 COPY docker/corosync.conf /etc/corosync/corosync.conf.template
 
+# Copy config files 
+COPY src/config.toml valkyrie-mls/config.toml
+
 # Replace placeholders in the Corosync config
 RUN sed "s/{{NODE_IP}}/$NODE_IP/" /etc/corosync/corosync.conf.template > /etc/corosync/corosync.conf
 
@@ -69,15 +74,15 @@ RUN sed "s/{{NODE_IP}}/$NODE_IP/" /etc/corosync/corosync.conf.template > /etc/co
 EXPOSE 5404/udp 5405/udp
 
 # Copy the entrypoint script
-COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY docker/entrypoint.sh valkyrie-mls/entrypoint.sh
+RUN chmod +x valkyrie-mls/entrypoint.sh
 
 # Copy the compiled Rust binary from the builder stage
 # (Adjust the path and binary name if your actual target differs)
-COPY --from=builder /app/target/debug/valkyrie-mls valkyrie-mls
+COPY --from=builder /app/target/debug/valkyrie-mls valkyrie-mls/valkyrie-mls
 
 # Set the entrypoint to the script
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["valkyrie-mls/entrypoint.sh"]
 
 # Default command if no arguments are provided
 CMD ["bash"]
