@@ -13,7 +13,7 @@ async fn main() -> Result<()>{
     env_logger::init();
     log::info!("Starting MLS Valkyrie...");
 
-    let config = Config::from_file("../config.toml").unwrap();
+    let config = Config::from_file("src/config.toml").unwrap();
 
     let mls_group_handler = MlsGroupHandler::new(config.mls.clone());
 

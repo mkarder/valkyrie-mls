@@ -26,6 +26,7 @@ pub trait MlsSwarmLogic {
 
     fn update_self(&mut self) -> (MlsMessageOut, Option<MlsMessageOut>);
     
+    #[allow(dead_code)]
     fn retrieve_ratchet_tree(&self) -> Vec<u8>;  
 
     fn process_incoming_network_message(&mut self, message: &[u8]) -> Result<Vec<u8>, Error>; 
@@ -43,7 +44,7 @@ impl MlsGroupHandler {
     pub fn new(config: MlsConfig) -> Self {
         let provider = OpenMlsRustCrypto::default();
         let cipher = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
-        let credential_type : CredentialType = match config.credential_type.as_str() {
+        let credential_type : CredentialType = match config.credential_type.to_lowercase().as_str() {
             "basic" => CredentialType::Basic,
             "x509" => CredentialType::X509,
             other => panic!("Cannot initialize Mls Component. Unsupported credential type: {}", other),
@@ -72,13 +73,6 @@ impl MlsGroupHandler {
             .use_ratchet_tree_extension(true)
             .build(&provider, &signature_key, credential.clone())
             .expect("An unexpected error occurred.");
-
-        // let group = MlsGroup::new(
-        //     &provider,
-        //     &signature_key,
-        //     &MlsGroupCreateConfig::default(),
-        //     credential.clone(),
-        // ).expect("Error creating initial group");
 
         MlsGroupHandler {
             config,

@@ -157,7 +157,7 @@ impl Router {
         init_global_channel(tx_corosync_channel);
 
         let handle_clone = self.corosync_handle.clone();
-        let join_handle = thread::spawn(move || {
+        thread::spawn(move || {
             if let Err(e) = receive_message(&handle_clone) {
                 eprintln!("Error receiving message from Corosync: {:?}", e);
             } else {
@@ -188,7 +188,6 @@ impl Router {
             }
 
                 // Commands and AppData coming in from CMD-socket, being sent to MLS_group_handler for processing, then being sent matched based on operation.
-
                 Ok((size, src, buf)) = async {
                     let mut buf = [0u8; MLS_MSG_BUFFER_SIZE];
                     let (size, src) = rx_cmd_socket.recv_from(&mut buf).await?;
@@ -234,7 +233,8 @@ impl Router {
                         .expect("Error handling outgoing application data.");
                         tx_network_socket.send_to(
                                 out.as_slice(), 
-                                format!("{}:{}", self.config.multicast_ip, self.config.tx_multicast_port)).await?;
+                                format!("{}:{}", self.config.multicast_ip, self.config.tx_multicast_port) 
+                            ).await?;
                         },
                         Ok(Command::BroadcastKeyPackage) => {
                             let key_package = self.mls_group_handler.get_key_package();
@@ -257,6 +257,22 @@ impl Router {
                         .expect("Failed to process incoming multicast packet.");
                     tx_app_socket
                         .send_to(data.as_slice(), self.config.tx_app_sock_addr.clone())
+                        .await
+                        .context("Failed to forward packet to application")?;
+                }
+
+                // Unencrypted AppData coming in from application, being sent to MLS_group_handler for encryption, then forwarded to radio network.
+                Ok((size, src, buf)) = async {
+                    let mut buf = [0u8; MLS_MSG_BUFFER_SIZE];
+                    let (size, src) = rx_app_socket.recv_from(&mut buf).await?;
+                    Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; MLS_MSG_BUFFER_SIZE])>
+                } => {
+                    log::info!("Application → MLS: {} bytes from {}", size, src);
+                    let data = self.mls_group_handler
+                        .process_outgoing_application_message(&buf[..size])
+                        .expect("Failed to process outgoing application data.");
+                    tx_network_socket
+                        .send_to(data.as_slice(), format!("{}:{}", self.config.multicast_ip, self.config.tx_multicast_port))
                         .await
                         .context("Failed to forward packet to application")?;
                 }
