@@ -2,32 +2,23 @@ use crate::corosync;
 use crate::corosync::receive_message;
 use crate::mls_group_handler::MlsSwarmLogic;
 use crate::MlsGroupHandler;
-use anyhow::{Context, Result, Error};
+use anyhow::{Context, Error, Result};
 use once_cell::sync::OnceCell;
+use openmls::prelude::LeafNodeIndex;
 use rust_corosync::cpg::Handle;
 use std::net::SocketAddr;
-use openmls::prelude::LeafNodeIndex;
+use std::result::Result::Ok;
+use std::thread;
 use tls_codec::Serialize;
 use tokio::net::UdpSocket;
-use tokio::{select, signal};
-use std::result::Result::Ok;
 use tokio::sync::mpsc;
+
 use std::thread;
 use crate::config::RouterConfig;
 
+use tokio::{select, signal};
 
 
-// TODO: Should be fetched from a configuration file
-// static NODE_IP : String = env::var("NODE_IP").unwrap();
-// const RX_CMD_ADDR : &str = "10.10.0.2:8000";
-// const RX_MULTICAST_ADDR :&str = "239.255.0.1"; // NB!: No port specifcation, use SOCKET const
-// const RX_DS_ADDR: &str = "127.0.0.1:6000";
-// const RX_APPLICATION_ADDR: &str = "127.0.0.1:7000";
-// const TX_APPLICATION_ADDR: &str = "127.0.0.1:7001";
-
-const MLS_MSG_BUFFER_SIZE: usize = 2048; // TODO: Explain choice of this size  
-
- 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MlsOperation {
@@ -60,7 +51,7 @@ impl TryFrom<u8> for MlsOperation {
 #[derive(Debug)]
 pub enum Command {
     Add { key_package_bytes: Vec<u8> },
-    AddPending ,
+    AddPending,
     Remove { index: u32 },
     Update,
     RetrieveRatchetTree,
@@ -76,55 +67,34 @@ pub fn parse_command(buffer: &[u8]) -> Result<Command, Error> {
     let op_code = buffer[0];
     let payload = &buffer[1..];
 
-    match MlsOperation::try_from(op_code).map_err(|_| "Invalid opcode").unwrap() {
+    match MlsOperation::try_from(op_code)
+        .map_err(|_| "Invalid opcode")
+        .unwrap()
+    {
         MlsOperation::Add => Ok(Command::Add {
-                        key_package_bytes: payload.to_vec(),
-            }),
+            key_package_bytes: payload.to_vec(),
+        }),
         MlsOperation::AddPending => Ok(Command::AddPending),
         MlsOperation::Remove => {
-                if payload.len() < 4 {
-                    return Err(Error::msg("Invalid Remove payload. Should be u32 (4 bytes long)"))
-                }
-                let index = u32::from_be_bytes(payload[..4].try_into().unwrap());
-                Ok(Command::Remove { index })
+            if payload.len() < 4 {
+                return Err(Error::msg(
+                    "Invalid Remove payload. Should be u32 (4 bytes long)",
+                ));
             }
+            let index = u32::from_be_bytes(payload[..4].try_into().unwrap());
+            Ok(Command::Remove { index })
+        }
         MlsOperation::Update => Ok(Command::Update),
         MlsOperation::RetrieveRatchetTree => Ok(Command::RetrieveRatchetTree),
         MlsOperation::ApplicationMsg => Ok(Command::ApplicationMsg {
-                data: payload.to_vec(),
-            }),
+            data: payload.to_vec(),
+        }),
         MlsOperation::BroadcastKeyPackage => Ok(Command::BroadcastKeyPackage),
-        }
-}
-
-pub fn serialize_command(cmd: &Command) -> Vec<u8> {
-    match cmd {
-        Command::Add { key_package_bytes } => {
-                        let mut buf = vec![MlsOperation::Add as u8];
-                        buf.extend_from_slice(key_package_bytes);
-                        buf
-            }
-        Command::Remove { index } => {
-                let mut buf = vec![MlsOperation::Remove as u8];
-                buf.extend(&index.to_be_bytes());
-                buf
-            }
-        Command::RetrieveRatchetTree => vec![MlsOperation::RetrieveRatchetTree as u8],
-        Command::Update => { vec![MlsOperation::Update as u8] },
-        Command::AddPending => { vec![MlsOperation::AddPending as u8]},
-        Command::ApplicationMsg { data } => {
-                let mut buf = vec![MlsOperation::ApplicationMsg as u8];
-                buf.extend_from_slice(data);
-                buf
-            }
-        Command::BroadcastKeyPackage => vec![MlsOperation::BroadcastKeyPackage as u8],
     }
 }
 
-
 //Global transmission channel for Corosync
 pub static TX_CHANNEL: OnceCell<mpsc::Sender<Vec<u8>>> = OnceCell::new();
-
 
 pub fn init_global_channel(tx: mpsc::Sender<Vec<u8>>) {
     TX_CHANNEL
@@ -166,6 +136,7 @@ impl Router {
             self.config.rx_app_sock_addr
         );
 
+
         let rx_network_socket = UdpSocket::bind(format!("0.0.0.0:{}", self.config.rx_multicast_port))
             .await
             .context("Failed to bind Multicast RX socket")?;
@@ -186,26 +157,14 @@ impl Router {
         let (tx_corosync_channel, mut rx_corosync_channel) = mpsc::channel::<Vec<u8>>(32);
         init_global_channel(tx_corosync_channel);
 
-        /*
-               // Spawn a blocking task to handle incoming Corosync messages
-               let handle_clone = self.corosync_handle.clone();
-               task::spawn_blocking(move || { //spawn_blocking
-                   receive_message(&handle_clone).expect("Error receiving message from Corosync");
-                   log::info!("Got milk");
-
-               });
-        */
-
-
         let handle_clone = self.corosync_handle.clone();
-        thread::spawn(move || {
+        let join_handle = thread::spawn(move || {
             if let Err(e) = receive_message(&handle_clone) {
                 eprintln!("Error receiving message from Corosync: {:?}", e);
             } else {
                 log::info!("Got milk");
             }
             log::info!("Got works");
-
         });
 
         loop {
@@ -220,7 +179,7 @@ impl Router {
                               .expect("Failed to send message through Corosync");
                             corosync::send_message(&self.corosync_handle, welcome.tls_serialize_detached().expect("Error serializng").as_slice())
                               .expect("Failed to send message through Corosync");
-                          
+
                         }
                         Ok(None) => {}
                         Err(e) => {
@@ -229,7 +188,7 @@ impl Router {
                 }
             }
 
-                // Commands and AppData coming in from CMD-socket, being sent to MLS_group_handler for processing, then being sent matched based on operation. 
+                // Commands and AppData coming in from CMD-socket, being sent to MLS_group_handler for processing, then being sent matched based on operation.
 
                 Ok((size, src, buf)) = async {
                     let mut buf = [0u8; MLS_MSG_BUFFER_SIZE];
@@ -310,6 +269,10 @@ impl Router {
                     log::info!(" Ctrl+C detected! Shutting down gracefully...");
                     rust_corosync::cpg::finalize(self.corosync_handle).expect("Failed to finalize Corosync");
                     log::info!(" Finalized called");
+                    // ... later:
+                    if let Err(e) = join_handle.join() {
+                        eprintln!("Thread panicked: {:?}", e);
+                    }
 
                     break;
                 }
@@ -320,5 +283,3 @@ impl Router {
         Ok(())
     }
 }
-
-

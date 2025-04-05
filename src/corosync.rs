@@ -2,7 +2,6 @@ use crate::router::TX_CHANNEL;
 use rust_corosync::cpg;
 use rust_corosync::cpg::{Address, Guarantee, Handle, Model1Data, Model1Flags, ModelData};
 use rust_corosync::NodeId;
-use tokio::task;
 
 /// Callback function for received multicast messages from Corosync 
 pub fn deliver_callback(
@@ -20,15 +19,13 @@ pub fn deliver_callback(
 
     if let Some(tx) = TX_CHANNEL.get() {
         let msg_vec = msg.to_vec();
-        let tx = tx.clone();
-        task::spawn(async move {
-            if let Err(e) = tx.send(msg_vec).await {
-                log::error!("[Corosync] Failed to forward message via TX_CHANNEL: {}", e);
-            }
-        });
+        if let Err(e) = tx.try_send(msg_vec) {
+            log::error!("[Corosync] Failed to forward message via TX_CHANNEL: {}", e);
+        }
     } else {
         log::warn!("[Corosync] TX_CHANNEL not initialized, dropping message");
     }
+    
 }
 
 /// Callback for membership changes
@@ -95,8 +92,3 @@ pub fn receive_message(handle: &Handle) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-pub fn finalize(handle: &Handle) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    cpg::finalize(*handle)?;
-    log::info!("[Corosync] Finalized CPG handle.");
-    Ok(())
-}
