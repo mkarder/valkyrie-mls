@@ -1,0 +1,33 @@
+// src/config.rs
+use serde::Deserialize;
+use std::fs;
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Config {
+    pub router: RouterConfig,
+    pub mls: MlsConfig,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct RouterConfig {
+    pub rx_cmd_sock_addr: String,
+    pub rx_app_sock_addr: String,
+    pub tx_app_sock_addr: String,
+    pub multicast_ip: String,
+    pub rx_multicast_port: u16,
+    pub tx_multicast_port: u16,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct MlsConfig {
+    pub node_id: String,
+    pub credential_type: String,
+}
+
+impl Config {
+    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let contents = fs::read_to_string(path)?;
+        let config: Config = toml::from_str(&contents)?;
+        Ok(config)
+    }
+}
