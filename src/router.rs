@@ -12,12 +12,11 @@ use std::thread;
 use tls_codec::Serialize;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
-
-use std::thread;
 use crate::config::RouterConfig;
 
 use tokio::{select, signal};
 
+const MLS_MSG_BUFFER_SIZE: usize = 4096;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,11 +268,6 @@ impl Router {
                     log::info!(" Ctrl+C detected! Shutting down gracefully...");
                     rust_corosync::cpg::finalize(self.corosync_handle).expect("Failed to finalize Corosync");
                     log::info!(" Finalized called");
-                    // ... later:
-                    if let Err(e) = join_handle.join() {
-                        eprintln!("Thread panicked: {:?}", e);
-                    }
-
                     break;
                 }
 
