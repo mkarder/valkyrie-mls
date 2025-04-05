@@ -1,0 +1,17 @@
+[router]
+# RX: '..00' ports
+# TX: '..01' ports  
+
+rx_cmd_sock_addr = "0.0.0.0:8000"
+
+rx_app_sock_addr = "127.0.0.1:4000"
+tx_app_sock_addr = "127.0.0.1:4001"
+
+multicast_ip = "239.255.0.1"
+rx_multicast_port = 5000
+tx_multicast_port = 5001
+
+
+[mls]
+node_id = "NODE"
+credential_type = "Basic"

@@ -12,12 +12,12 @@ use std::thread;
 use tls_codec::Serialize;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
+
+use std::thread;
+use crate::config::RouterConfig;
+
 use tokio::{select, signal};
 
-const RX_CMD_ADDR: &str = "10.10.0.1:8000";
-const RX_MULTICAST_ADDR: &str = "239.255.0.1"; // NB!: No port specifcation, use SOCKET const
-const TX_APPLICATION_ADDR: &str = "127.0.0.1:7001";
-const MLS_MSG_BUFFER_SIZE: usize = 2048; // TODO: Explain choice of this size
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,38 +105,51 @@ pub fn init_global_channel(tx: mpsc::Sender<Vec<u8>>) {
 pub struct Router {
     mls_group_handler: MlsGroupHandler,
     corosync_handle: Handle,
+    config: RouterConfig,
 }
 
 impl Router {
-    pub fn new(mls_group_handler: MlsGroupHandler) -> Self {
+    pub fn new(mls_group_handler: MlsGroupHandler, config: RouterConfig ) -> Self {
         let handle = corosync::initialize();
         Self {
             mls_group_handler,
             corosync_handle: handle,
+            config
         }
     }
 
     pub async fn run_main_loop(&mut self) -> Result<()> {
         // Bind UDP sockets
-
-        let rx_cmd_socket = UdpSocket::bind(RX_CMD_ADDR)
+        let rx_cmd_socket = UdpSocket::bind(self.config.rx_cmd_sock_addr.clone())
             .await
             .context("Failed to bind Command RX socket")?;
-        log::info!("Listening for command messages on {}", RX_CMD_ADDR);
+        log::info!(
+            "Listening for Command messages on {}",
+            self.config.rx_cmd_sock_addr
+        );  
+      
+        let rx_app_socket = UdpSocket::bind(self.config.rx_app_sock_addr.clone())
+            .await
+            .context("Failed to bind Application RX socket")?;
+        log::info!(
+            "Listening for Application messages on {}",
+            self.config.rx_app_sock_addr
+        );
 
-        let rx_network_socket = UdpSocket::bind("0.0.0.0:5000")
+
+        let rx_network_socket = UdpSocket::bind(format!("0.0.0.0:{}", self.config.rx_multicast_port))
             .await
             .context("Failed to bind Multicast RX socket")?;
         rx_network_socket
-            .join_multicast_v4(RX_MULTICAST_ADDR.parse()?, "0.0.0.0".parse()?)
+            .join_multicast_v4(self.config.multicast_ip.parse()?, "0.0.0.0".parse()?)
             .context("Failed to join multicast group")?;
-        log::info!("Joined multicast group {} on port 5000", RX_MULTICAST_ADDR);
+        log::info!("Joined multicast group {} on port {}", self.config.multicast_ip, self.config.rx_multicast_port);
 
         let tx_app_socket = UdpSocket::bind("0.0.0.0:0")
             .await
             .context("Failed to bind Application TX socket")?;
 
-        let tx_network_socket = UdpSocket::bind("0.0.0.0:5001")
+        let tx_network_socket = UdpSocket::bind("0.0.0.0:0")
             .await
             .context("Failed to bind Multicast TX socket")?;
         tx_network_socket.set_multicast_loop_v4(true)?;
@@ -220,7 +233,9 @@ impl Router {
                         Ok(Command::ApplicationMsg{data}) => {
                             let out = self.mls_group_handler.process_outgoing_application_message(&data)
                         .expect("Error handling outgoing application data.");
-                        tx_network_socket.send_to(out.as_slice(), "239.255.0.1:5001").await?;
+                        tx_network_socket.send_to(
+                                out.as_slice(), 
+                                format!("{}:{}", self.config.multicast_ip, self.config.tx_multicast_port)).await?;
                         },
                         Ok(Command::BroadcastKeyPackage) => {
                             let key_package = self.mls_group_handler.get_key_package();
@@ -242,7 +257,7 @@ impl Router {
                         .process_incoming_network_message(&buf[..size])
                         .expect("Failed to process incoming multicast packet.");
                     tx_app_socket
-                        .send_to(data.as_slice(), TX_APPLICATION_ADDR)
+                        .send_to(data.as_slice(), self.config.tx_app_sock_addr.clone())
                         .await
                         .context("Failed to forward packet to application")?;
                 }

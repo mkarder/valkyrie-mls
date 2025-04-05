@@ -5,12 +5,11 @@ use openmls::group::MlsGroup;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use tls_codec::{Deserialize, Serialize};
-
-const MACHINE_ID : &str = "NODE";
-const CREDENTIAL_TYPE : CredentialType = CredentialType::Basic;
+use crate::config::MlsConfig;
 
 #[allow(dead_code)]
 pub struct MlsGroupHandler {
+    config: MlsConfig,
     provider: OpenMlsRustCrypto,
     group: MlsGroup,
     signature_key: SignatureKeyPair,
@@ -41,13 +40,17 @@ pub trait MlsSwarmLogic {
 
 #[allow(dead_code)]
 impl MlsGroupHandler {
-    pub fn new() -> Self {
+    pub fn new(config: MlsConfig) -> Self {
         let provider = OpenMlsRustCrypto::default();
         let cipher = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
-
+        let credential_type : CredentialType = match config.credential_type.as_str() {
+            "basic" => CredentialType::Basic,
+            "x509" => CredentialType::X509,
+            other => panic!("Cannot initialize Mls Component. Unsupported credential type: {}", other),
+        };
         let (credential, signature_key) = generate_credential_with_key(
-            MACHINE_ID.as_bytes().to_vec(),
-            CREDENTIAL_TYPE,
+            config.node_id.clone().into_bytes(),
+            credential_type,
             cipher.signature_algorithm(),
             &provider,
         );
@@ -78,6 +81,7 @@ impl MlsGroupHandler {
         // ).expect("Error creating initial group");
 
         MlsGroupHandler {
+            config,
             provider,
             group,
             signature_key,
