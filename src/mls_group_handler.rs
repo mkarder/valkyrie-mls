@@ -8,7 +8,7 @@ use tls_codec::{Deserialize, Serialize};
 use crate::config::MlsConfig;
 
 #[allow(dead_code)]
-pub struct MlsGroupHandler {
+pub struct MlsEngine {
     config: MlsConfig,
     provider: OpenMlsRustCrypto,
     group: MlsGroup,
@@ -40,7 +40,7 @@ pub trait MlsSwarmLogic {
 }
 
 #[allow(dead_code)]
-impl MlsGroupHandler {
+impl MlsEngine {
     pub fn new(config: MlsConfig) -> Self {
         let provider = OpenMlsRustCrypto::default();
         let cipher = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
@@ -74,7 +74,7 @@ impl MlsGroupHandler {
             .build(&provider, &signature_key, credential.clone())
             .expect("An unexpected error occurred.");
 
-        MlsGroupHandler {
+        MlsEngine {
             config,
             provider,
             group,
@@ -96,7 +96,7 @@ impl MlsGroupHandler {
     }
 }
 
-impl MlsSwarmLogic for MlsGroupHandler {
+impl MlsSwarmLogic for MlsEngine {
     fn process_incoming_network_message(&mut self, mut buf: &[u8]) -> Result<Vec<u8>, Error> {
         let message_in = MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
         match message_in.extract() {

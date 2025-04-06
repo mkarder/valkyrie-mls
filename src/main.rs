@@ -4,7 +4,7 @@ mod corosync;
 mod config;
 
 use config::Config;
-use mls_group_handler::MlsGroupHandler;
+use mls_group_handler::MlsEngine;
 use router::Router;
 use anyhow::{Ok, Result};
 
@@ -15,9 +15,9 @@ async fn main() -> Result<()>{
 
     let config = Config::from_file("./config.toml").unwrap();
 
-    let mls_group_handler = MlsGroupHandler::new(config.mls.clone());
+    let mls_engine = MlsEngine::new(config.mls.clone());
 
-    let mut router = Router::new(mls_group_handler, config.router.clone());
+    let mut router = Router::new(mls_engine, config.router.clone());
     router.run_main_loop().await?;
     
     log::info!("Stopping MLS Valkyrie...");

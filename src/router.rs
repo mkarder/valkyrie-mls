@@ -1,7 +1,7 @@
 use crate::corosync;
 use crate::corosync::receive_message;
 use crate::mls_group_handler::MlsSwarmLogic;
-use crate::MlsGroupHandler;
+use crate::MlsEngine;
 use anyhow::{Context, Error, Result};
 use once_cell::sync::OnceCell;
 use openmls::prelude::LeafNodeIndex;
@@ -102,13 +102,13 @@ pub fn init_global_channel(tx: mpsc::Sender<Vec<u8>>) {
 }
 
 pub struct Router {
-    mls_group_handler: MlsGroupHandler,
+    mls_group_handler: MlsEngine,
     corosync_handle: Handle,
     config: RouterConfig,
 }
 
 impl Router {
-    pub fn new(mls_group_handler: MlsGroupHandler, config: RouterConfig ) -> Self {
+    pub fn new(mls_group_handler: MlsEngine, config: RouterConfig ) -> Self {
         let handle = corosync::initialize();
         Self {
             mls_group_handler,
