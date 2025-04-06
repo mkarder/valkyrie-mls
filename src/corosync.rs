@@ -97,9 +97,15 @@ pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::
     if let Err(e) = cpg::mcast_joined(*handle, Guarantee::TypeAgreed, message) {
         eprintln!("Failed to send message: {}", e);
     }
-    log::info!("[Corosync] Sent message to group: {:?}", message);
-    Ok(())
+    log::info!(
+        "[Corosync] Sent message to group; msg_len={}: {:?}",
+        message.len(),
+        message
+    );
+        Ok(())
 }
+
+
 
 /// Blocking receive loop for Corosync messages (runs in a separate thread)
 pub fn receive_message(handle: &Handle) -> Result<(), Box<dyn std::error::Error>> {
