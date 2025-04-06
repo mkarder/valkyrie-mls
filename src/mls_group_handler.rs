@@ -204,6 +204,7 @@ impl MlsSwarmLogic for MlsEngine {
             }
 
             MlsMessageBodyIn::PrivateMessage(msg) => {
+                //let processed_message = self.group.process_message(&self.provider, msg).expect("Error processing message"); Panicked here, which stopped the program 
                 let processed_message = self
                     .group
                     .process_message(&self.provider, msg)
