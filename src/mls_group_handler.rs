@@ -354,7 +354,7 @@ impl MlsSwarmLogic for MlsEngine {
         let _ = self
             .group
             .merge_staged_commit(&self.provider, commit)
-            .context("Error handling staged commit.");
+            .expect("Error handling staged commit.");
     }
 
     fn remove_member(
@@ -380,6 +380,12 @@ impl MlsSwarmLogic for MlsEngine {
     }
 
     fn update_self(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
+        let pending = self.group.pending_commit();
+        if pending.is_some() {
+            log::error!("Pending commit exists. Cannot update self. \n Pending commit: {:?}", pending);
+            return Err(Error::msg("Pending commit exists. Cannot update self."));
+        }
+
         match self.group
             .self_update(
                 &self.provider,
