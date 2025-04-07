@@ -55,6 +55,7 @@ ENV NODE_ID=$NODE_ID
 RUN apt-get update && apt-get install -y \
     iputils-ping \
     iproute2 \
+    iperf \
     iperf3 \
     corosync \
     nano \
