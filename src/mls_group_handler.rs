@@ -343,8 +343,10 @@ impl MlsSwarmLogic for MlsEngine {
                 .expect("Error serializing welcome");
             welcome_and_commits.push((group_commit_out, welcome_out));
         }
+        // Apply changes to own group and clear pending key packages
         let _ = self.group.merge_pending_commit(&self.provider);
         self.pending_key_packages.clear();
+        
         Ok(welcome_and_commits)
     }
 
@@ -408,6 +410,10 @@ impl MlsSwarmLogic for MlsEngine {
                     .tls_serialize_detached()
                     .expect("Error serializing welcome")
             });
+        
+        // Apply changes to own group
+        let _ = self.group.merge_pending_commit(&self.provider);
+
         (group_commit_out, welcome_out)
     }
 
