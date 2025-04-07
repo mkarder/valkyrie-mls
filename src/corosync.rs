@@ -98,9 +98,8 @@ pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::
         eprintln!("Failed to send message: {}", e);
     }
     log::info!(
-        "[Corosync] Sent message to group; msg_len={}: {:?}",
-        message.len(),
-        message
+        "[Corosync] Sent message to group; msg_len={}",
+        message.len()
     );
         Ok(())
 }
