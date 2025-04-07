@@ -1,5 +1,5 @@
 use crate::config::MlsConfig;
-use anyhow::{Context, Error, Ok};
+use anyhow::{Context, Error};
 use openmls::group::MlsGroup;
 use openmls::prelude::{group_info::VerifiableGroupInfo, *};
 use openmls_basic_credential::SignatureKeyPair;
@@ -29,7 +29,7 @@ pub trait MlsSwarmLogic {
     fn remove_member(&mut self, leaf_node: LeafNodeIndex)
         -> (Vec<u8>, Option<Vec<u8>>);
 
-    fn update_self(&mut self) -> (Vec<u8>, Option<Vec<u8>>);
+    fn update_self(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error>;
 
     #[allow(dead_code)]
     fn retrieve_ratchet_tree(&self) -> Vec<u8>;
@@ -379,27 +379,30 @@ impl MlsSwarmLogic for MlsEngine {
         (group_commit_out, welcome_out)
     }
 
-    fn update_self(&mut self) -> (Vec<u8>, Option<Vec<u8>>) {
-        let (group_commit, welcome_option, _group_info) = self
-            .group
+    fn update_self(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
+        match self.group
             .self_update(
                 &self.provider,
                 &self.signature_key,
-                LeafNodeParameters::default(),
-            )
-            .expect("Error updating self");
-    
-        // TODO: Fix error handling. This will panic if serialization fails.
-        let group_commit_out = group_commit
-            .tls_serialize_detached()
-            .expect("Error serializing group commit");
-        let welcome_out = welcome_option // Only process welcome if it is Some 
-            .map(|welcome| {
-                welcome
-                    .tls_serialize_detached()
-                    .expect("Error serializing welcome")
-            });
-        (group_commit_out, welcome_out)
+                LeafNodeParameters::default()
+            ) {
+                Ok((group_commit, welcome_option, _group_info)) => {
+                    let group_commit_out = group_commit
+                        .tls_serialize_detached()
+                        .expect("Error serializing group commit");
+                    let welcome_out = welcome_option // Only process welcome if it is Some 
+                        .map(|welcome| {
+                            welcome
+                                .tls_serialize_detached()
+                                .expect("Error serializing welcome")
+                        });
+                        return Ok((group_commit_out, welcome_out))
+                }
+                Err(e) => {
+                    log::error!("Error updating self: {:?}", e);
+                    return Err(Error::msg("Error updating self"));
+                }
+        }
     }
 
     /// Helper function to retrieve the ratchet tree from the group.
