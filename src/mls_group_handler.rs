@@ -171,6 +171,10 @@ impl MlsSwarmLogic for MlsEngine {
         &mut self,
         mut buf: &[u8],
     ) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
+        log::debug!("Processing incoming delivery service message. \n Group epoch before processing: {:?}", 
+            self.group.epoch()
+            );
+
         let message_in =
             MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
         match message_in.extract() {
