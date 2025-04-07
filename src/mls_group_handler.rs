@@ -91,7 +91,7 @@ impl MlsEngine {
         }
     }
 
-    fn load_group(&mut self, group_id: Vec<u8>) -> Option<MlsGroup> {
+    pub fn load_group(&mut self, group_id: Vec<u8>) -> Option<MlsGroup> {
         MlsGroup::load(self.provider.storage(), &GroupId::from_slice(&group_id))
             .expect("Error loading group")
     }
@@ -101,6 +101,14 @@ impl MlsEngine {
         key_package
             .tls_serialize_detached()
             .context("Error serializing key package")
+    }
+
+    pub fn pending_key_packages(&self) -> &HashMap<KeyPackageRef, KeyPackage> {
+        &self.pending_key_packages
+    }
+
+    pub fn group(&self) -> &MlsGroup {
+        &self.group
     }
 }
 
@@ -339,6 +347,7 @@ impl MlsSwarmLogic for MlsEngine {
                 .expect("Error serializing welcome");
             welcome_and_commits.push((group_commit_out, welcome_out));
         }
+        let _ = self.group.merge_pending_commit(&self.provider);
         self.pending_key_packages.clear();
         Ok(welcome_and_commits)
     }
