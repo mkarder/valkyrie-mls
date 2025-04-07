@@ -144,7 +144,7 @@ impl Router {
         let node_ip: Ipv4Addr = node_ip_str.parse().context("Invalid NODE_IP format")?;
 
 
-        let rx_network_socket = UdpSocket::bind(format!("0.0.0.0:{}", self.config.rx_multicast_port))
+        let rx_network_socket = UdpSocket::bind(format!("{}:{}", self.config.multicast_ip, self.config.rx_multicast_port))
             .await
             .context("Failed to bind Multicast RX socket")?;
         rx_network_socket
@@ -152,12 +152,11 @@ impl Router {
             .context("Failed to join multicast group")?;
         log::info!("Joined multicast group {} on port {} with local iface ip {}", self.config.multicast_ip, self.config.rx_multicast_port, node_ip);
 
-        let tx_network_socket = UdpSocket::bind(format!("{}:0", node_ip)) //Try with own ip address
+        let tx_network_socket = UdpSocket::bind(format!("{}:{}", node_ip, self.config.tx_multicast_port)) //Try with own ip address
             .await
             .context("Failed to bind Multicast TX socket")?;
-        tx_network_socket.set_multicast_loop_v4(true)?;
-        log::info!("Bound multicast TX socket to interface {} (ephemeral port). Multicast loopback is enabled.", node_ip);
-        
+        tx_network_socket.set_multicast_loop_v4(false)?;
+        log::info!("Bound multicast TX socket to {}:{}. Multicast loopback is disabled.", node_ip, self.config.tx_multicast_port);        
 
 
 
