@@ -415,6 +415,8 @@ impl MlsSwarmLogic for MlsEngine {
                                 .tls_serialize_detached()
                                 .expect("Error serializing welcome")
                         });
+                        let _ = self.group.merge_pending_commit(&self.provider);
+                    log::info!("Updated self in group with ID: {:?}", self.group.group_id());
                         return Ok((group_commit_out, welcome_out))
                 }
                 Err(e) => {
