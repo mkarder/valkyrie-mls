@@ -19,17 +19,17 @@ pub struct MlsEngine {
 }
 
 pub trait MlsSwarmLogic {
-    fn add_new_member(&mut self, key_package: KeyPackage) -> (MlsMessageOut, MlsMessageOut);
+    fn add_new_member(&mut self, key_package: KeyPackage) -> (Vec<u8>, Vec<u8>);
     fn add_new_member_from_bytes(
         &mut self,
         key_package_bytes: &[u8],
-    ) -> (MlsMessageOut, MlsMessageOut);
-    fn add_pending_key_packages(&mut self) -> Result<Vec<(MlsMessageOut, MlsMessageOut)>, Error>;
+    ) -> (Vec<u8>, Vec<u8>);
+    fn add_pending_key_packages(&mut self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error>;
 
     fn remove_member(&mut self, leaf_node: LeafNodeIndex)
-        -> (MlsMessageOut, Option<MlsMessageOut>);
+        -> (Vec<u8>, Option<Vec<u8>>);
 
-    fn update_self(&mut self) -> (MlsMessageOut, Option<MlsMessageOut>);
+    fn update_self(&mut self) -> (Vec<u8>, Option<Vec<u8>>);
 
     #[allow(dead_code)]
     fn retrieve_ratchet_tree(&self) -> Vec<u8>;
@@ -38,7 +38,7 @@ pub trait MlsSwarmLogic {
     fn process_incoming_delivery_service_message(
         &mut self,
         message: &[u8],
-    ) -> Result<Option<(MlsMessageOut, MlsMessageOut)>, Error>;
+    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error>;
     fn process_outgoing_application_message(&mut self, message: &[u8]) -> Result<Vec<u8>, Error>;
 
     fn handle_incoming_welcome(&mut self, welcome: Welcome);
@@ -96,8 +96,11 @@ impl MlsEngine {
             .expect("Error loading group")
     }
 
-    pub fn get_key_package(&self) -> MlsMessageOut {
-        MlsMessageOut::from(self.key_package.key_package().clone())
+    pub fn get_key_package(&self) -> Result<Vec<u8>, Error> {
+        let key_package = MlsMessageOut::from(self.key_package.key_package().clone());
+        key_package
+            .tls_serialize_detached()
+            .context("Error serializing key package")
     }
 }
 
@@ -167,7 +170,7 @@ impl MlsSwarmLogic for MlsEngine {
     fn process_incoming_delivery_service_message(
         &mut self,
         mut buf: &[u8],
-    ) -> Result<Option<(MlsMessageOut, MlsMessageOut)>, Error> {
+    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
         let message_in =
             MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
         match message_in.extract() {
@@ -291,7 +294,7 @@ impl MlsSwarmLogic for MlsEngine {
             .insert(key_ref, key_package.clone());
     }
 
-    fn add_new_member(&mut self, key_package: KeyPackage) -> (MlsMessageOut, MlsMessageOut) {
+    fn add_new_member(&mut self, key_package: KeyPackage) -> (Vec<u8>, Vec<u8>) {
         let (group_commit, welcome, _group_info) = self
             .group
             .add_members(&self.provider, &self.signature_key, &[key_package.clone()])
@@ -301,12 +304,18 @@ impl MlsSwarmLogic for MlsEngine {
             "Added new member to group with ID: {:?}",
             self.group.group_id()
         );
-        log::debug!("GroupCommit: {:?}", group_commit);
-        log::debug!("Welcome: {:?}", welcome);
-        (group_commit, welcome)
+
+        // TODO: Fix error handling. This will panic if serialization fails.
+        let group_commit_out = group_commit
+            .tls_serialize_detached()
+            .expect("Error serializing group commit");
+        let welcome_out = welcome
+            .tls_serialize_detached()
+            .expect("Error serializing welcome");
+        (group_commit_out, welcome_out)
     }
 
-    fn add_pending_key_packages(&mut self) -> Result<Vec<(MlsMessageOut, MlsMessageOut)>, Error> {
+    fn add_pending_key_packages(&mut self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
         let mut welcome_and_commits = Vec::new();
         for (_key_ref, key_package) in self.pending_key_packages.iter() {
             let (group_commit, welcome, _group_info) = self
@@ -317,9 +326,14 @@ impl MlsSwarmLogic for MlsEngine {
                 "Added new member to group with ID: {:?}",
                 self.group.group_id()
             );
-            log::debug!("GroupCommit: {:?}", group_commit);
-            log::debug!("Welcome: {:?}", welcome);
-            welcome_and_commits.push((group_commit, welcome));
+            // TODO: Fix error handling. This will panic if serialization fails.
+            let group_commit_out = group_commit
+                .tls_serialize_detached()
+                .expect("Error serializing group commit");
+            let welcome_out = welcome
+                .tls_serialize_detached()
+                .expect("Error serializing welcome");
+            welcome_and_commits.push((group_commit_out, welcome_out));
         }
         self.pending_key_packages.clear();
         Ok(welcome_and_commits)
@@ -346,16 +360,26 @@ impl MlsSwarmLogic for MlsEngine {
     fn remove_member(
         &mut self,
         leaf_node: LeafNodeIndex,
-    ) -> (MlsMessageOut, Option<MlsMessageOut>) {
+    ) -> (Vec<u8>, Option<Vec<u8>>) {
         let (group_commit, welcome_option, _group_info) = self
             .group
             .remove_members(&self.provider, &self.signature_key, &[leaf_node])
             .expect("Error removing member");
 
-        (group_commit, welcome_option)
+        // TODO: Fix error handling. This will panic if serialization fails.
+        let group_commit_out = group_commit
+            .tls_serialize_detached()
+            .expect("Error serializing group commit");
+        let welcome_out = welcome_option // Only process welcome if it is Some 
+            .map(|welcome| {
+                welcome
+                    .tls_serialize_detached()
+                    .expect("Error serializing welcome")
+            });
+        (group_commit_out, welcome_out)
     }
 
-    fn update_self(&mut self) -> (MlsMessageOut, Option<MlsMessageOut>) {
+    fn update_self(&mut self) -> (Vec<u8>, Option<Vec<u8>>) {
         let (group_commit, welcome_option, _group_info) = self
             .group
             .self_update(
@@ -364,8 +388,18 @@ impl MlsSwarmLogic for MlsEngine {
                 LeafNodeParameters::default(),
             )
             .expect("Error updating self");
-
-        (group_commit, welcome_option)
+    
+        // TODO: Fix error handling. This will panic if serialization fails.
+        let group_commit_out = group_commit
+            .tls_serialize_detached()
+            .expect("Error serializing group commit");
+        let welcome_out = welcome_option // Only process welcome if it is Some 
+            .map(|welcome| {
+                welcome
+                    .tls_serialize_detached()
+                    .expect("Error serializing welcome")
+            });
+        (group_commit_out, welcome_out)
     }
 
     /// Helper function to retrieve the ratchet tree from the group.
@@ -380,7 +414,7 @@ impl MlsSwarmLogic for MlsEngine {
     fn add_new_member_from_bytes(
         &mut self,
         mut key_package_bytes: &[u8],
-    ) -> (MlsMessageOut, MlsMessageOut) {
+    ) -> (Vec<u8>, Vec<u8>) {
         let message_in = MlsMessageIn::tls_deserialize(&mut key_package_bytes)
             .expect("Error deserializing message");
         let key_package_in = match message_in.extract() {
