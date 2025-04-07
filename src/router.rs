@@ -1,7 +1,7 @@
-use crate::corosync;
-use crate::corosync::receive_message;
 use crate::mls_group_handler::MlsSwarmLogic;
-use crate::MlsEngine;
+
+use crate::{corosync, mls_group_handler::MlsEngine};
+use crate::corosync::receive_message;
 use anyhow::{Context, Error, Result};
 use once_cell::sync::OnceCell;
 use openmls::prelude::LeafNodeIndex;
@@ -12,6 +12,8 @@ use std::thread;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use crate::config::RouterConfig;
+use std::env;
+use std::net::Ipv4Addr;
 
 use tokio::{select, signal};
 
@@ -121,36 +123,42 @@ impl Router {
         let rx_cmd_socket = UdpSocket::bind(self.config.rx_cmd_sock_addr.clone())
             .await
             .context("Failed to bind Command RX socket")?;
-        log::info!(
-            "Listening for Command messages on {}",
-            self.config.rx_cmd_sock_addr
-        );  
+        log::info!("Listening for Command messages on {}", self.config.rx_cmd_sock_addr);  
       
+
+        //Application UDP Sockets (Send and receive from application)
         let rx_app_socket = UdpSocket::bind(self.config.rx_app_sock_addr.clone())
             .await
             .context("Failed to bind Application RX socket")?;
-        log::info!(
-            "Listening for Application messages on {}",
-            self.config.rx_app_sock_addr
-        );
-
-
-        let rx_network_socket = UdpSocket::bind(format!("0.0.0.0:{}", self.config.rx_multicast_port))
-            .await
-            .context("Failed to bind Multicast RX socket")?;
-        rx_network_socket
-            .join_multicast_v4(self.config.multicast_ip.parse()?, "0.0.0.0".parse()?)
-            .context("Failed to join multicast group")?;
-        log::info!("Joined multicast group {} on port {}", self.config.multicast_ip, self.config.rx_multicast_port);
+        log::info!("Listening for AppData coming from Application on {}", self.config.rx_app_sock_addr);
 
         let tx_app_socket = UdpSocket::bind("0.0.0.0:0")
             .await
             .context("Failed to bind Application TX socket")?;
 
-        let tx_network_socket = UdpSocket::bind("0.0.0.0:0")
+        
+
+        //Radio Network Multicast Sockets (Send and receive from radio network)
+        // Get interface IP from env
+        let node_ip_str = env::var("NODE_IP").context("NODE_IP not set")?;
+        let node_ip: Ipv4Addr = node_ip_str.parse().context("Invalid NODE_IP format")?;
+
+
+        let rx_network_socket = UdpSocket::bind(format!("{}:{}", self.config.multicast_ip, self.config.multicast_port))
+            .await
+            .context("Failed to bind Multicast RX socket")?;
+        rx_network_socket
+            .join_multicast_v4(self.config.multicast_ip.parse()?, node_ip) //Try with your own ip address as interface, 10.10.0.x 
+            .context("Failed to join multicast group")?;
+        log::info!("Joined multicast group {} on port {} with local iface ip {}", self.config.multicast_ip, self.config.multicast_port, node_ip);
+
+        let tx_network_socket = UdpSocket::bind(format!("{}:{}", node_ip, self.config.multicast_port)) //Try with own ip address
             .await
             .context("Failed to bind Multicast TX socket")?;
-        tx_network_socket.set_multicast_loop_v4(true)?;
+        tx_network_socket.set_multicast_loop_v4(false)?;
+        log::info!("Bound multicast TX socket to {}:{}. Multicast loopback is disabled.", node_ip, self.config.multicast_port);        
+
+
 
         let (tx_corosync_channel, mut rx_corosync_channel) = mpsc::channel::<Vec<u8>>(32);
         init_global_channel(tx_corosync_channel);
@@ -221,18 +229,31 @@ impl Router {
 
                         },
                         Ok(Command::Update) => {
-                            let (commit, _welcome_option) = self.mls_group_handler.update_self();
-                            corosync::send_message(&self.corosync_handle, commit.as_slice())
-                              .expect("Failed to send message through Corosync");
+                            match self.mls_group_handler.update_self() {
+                                Ok((commit, welcome_option)) => {
+                                    corosync::send_message(&self.corosync_handle, commit.as_slice())
+                                      .expect("Failed to send message through Corosync");
+                                    if let Some(welcome) = welcome_option {
+                                        corosync::send_message(&self.corosync_handle, welcome.as_slice())
+                                          .expect("Failed to send message through Corosync");
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("Error updating self: {}", e);
+                                }
+                            }
 
                         },
                         Ok(Command::RetrieveRatchetTree) => { todo!()},
+
                         Ok(Command::ApplicationMsg{data}) => {
                             let out = self.mls_group_handler.process_outgoing_application_message(&data)
                         .expect("Error handling outgoing application data.");
+                        log::info!("Sending application message to {}:{} ({} bytes)", self.config.multicast_ip, self.config.multicast_port, out.len());
+
                         tx_network_socket.send_to(
                                 out.as_slice(), 
-                                format!("{}:{}", self.config.multicast_ip, self.config.tx_multicast_port) 
+                                format!("{}:{}", self.config.multicast_ip, self.config.multicast_port) 
                             ).await?;
                         },
                         Ok(Command::BroadcastKeyPackage) => {
@@ -278,7 +299,7 @@ impl Router {
                         .process_outgoing_application_message(&buf[..size])
                         .expect("Failed to process outgoing application data.");
                     tx_network_socket
-                        .send_to(data.as_slice(), format!("{}:{}", self.config.multicast_ip, self.config.tx_multicast_port))
+                        .send_to(data.as_slice(), format!("{}:{}", self.config.multicast_ip, self.config.multicast_port))
                         .await
                         .context("Failed to forward packet to application")?;
                 }
