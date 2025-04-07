@@ -171,6 +171,10 @@ impl MlsSwarmLogic for MlsEngine {
         &mut self,
         mut buf: &[u8],
     ) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
+        log::debug!("Processing incoming delivery service message. \n Group epoch before processing: {:?}", 
+            self.group.epoch()
+            );
+
         let message_in =
             MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
         match message_in.extract() {
@@ -354,7 +358,7 @@ impl MlsSwarmLogic for MlsEngine {
         let _ = self
             .group
             .merge_staged_commit(&self.provider, commit)
-            .context("Error handling staged commit.");
+            .expect("Error handling staged commit.");
     }
 
     fn remove_member(
@@ -380,6 +384,12 @@ impl MlsSwarmLogic for MlsEngine {
     }
 
     fn update_self(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
+        let pending = self.group.pending_commit();
+        if pending.is_some() {
+            log::error!("Pending commit exists. Cannot update self. \n Pending commit: {:?}", pending);
+            return Err(Error::msg("Pending commit exists. Cannot update self."));
+        }
+
         match self.group
             .self_update(
                 &self.provider,
