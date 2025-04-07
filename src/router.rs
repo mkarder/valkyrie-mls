@@ -221,9 +221,19 @@ impl Router {
 
                         },
                         Ok(Command::Update) => {
-                            let (commit, _welcome_option) = self.mls_group_handler.update_self();
-                            corosync::send_message(&self.corosync_handle, commit.as_slice())
-                              .expect("Failed to send message through Corosync");
+                            match self.mls_group_handler.update_self() {
+                                Ok((commit, welcome_option)) => {
+                                    corosync::send_message(&self.corosync_handle, commit.as_slice())
+                                      .expect("Failed to send message through Corosync");
+                                    if let Some(welcome) = welcome_option {
+                                        corosync::send_message(&self.corosync_handle, welcome.as_slice())
+                                          .expect("Failed to send message through Corosync");
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("Error updating self: {}", e);
+                                }
+                            }
 
                         },
                         Ok(Command::RetrieveRatchetTree) => { todo!()},
