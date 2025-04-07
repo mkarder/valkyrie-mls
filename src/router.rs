@@ -1,7 +1,7 @@
-use crate::corosync;
-use crate::corosync::receive_message;
 use crate::mls_group_handler::MlsSwarmLogic;
-use crate::MlsEngine;
+
+use crate::{corosync, mls_group_handler::MlsEngine};
+use crate::corosync::receive_message;
 use anyhow::{Context, Error, Result};
 use once_cell::sync::OnceCell;
 use openmls::prelude::LeafNodeIndex;
