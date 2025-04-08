@@ -138,7 +138,10 @@ impl MlsSwarmLogic for MlsEngine {
                 let processed_message = self
                     .group
                     .process_message(&self.provider, msg)
-                    .expect("Error processing message");
+                    .map_err(|e| {
+                        log::error!("Error processing message: {:?}", e);
+                        Error::msg("Error processing message.")
+                    })?;
                 match processed_message.into_content() {
                     ProcessedMessageContent::ApplicationMessage(payload) => {
                         let content_bytes = payload.into_bytes();
