@@ -1,6 +1,6 @@
 use crate::config::MlsConfig;
 use anyhow::{Context, Error};
-use openmls::group::{self, MlsGroup};
+use openmls::group::{MlsGroup};
 use openmls::prelude::{group_info::VerifiableGroupInfo, *};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
