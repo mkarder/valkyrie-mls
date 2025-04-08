@@ -268,24 +268,33 @@ impl MlsSwarmLogic for MlsEngine {
     fn handle_incoming_welcome(&mut self, welcome: Welcome) {
         // We assume we join every welcome message we receive.
         log::warn!("TODO: Verify welcome message before joining group.");
+        log::debug!("Node {:?} received Welcome message: {:?}", self.config.node_id, welcome);
         let staged_join = StagedWelcome::new_from_welcome(
             &self.provider,
             &MlsGroupJoinConfig::default(),
             welcome,
             None,
         )
-        .expect("Error constructing staged join");
+        .context("Error constructing staged join");
 
         // TODO: Validate sender. Check credential through Authentication Seervice.
         // let sender = staged_join.welcome_sender()
         //     .expect("Error getting sender from staged join");
         // validate(sender);
 
-        let group = staged_join
-            .into_group(&self.provider)
-            .expect("Error joining group from StagedWelcome");
-        log::info!("Joined group with ID: {:?}", group.group_id().as_slice());
-        self.group = group;
+        match staged_join {
+            Ok(staged_join) => {
+                let group = staged_join
+                    .into_group(&self.provider)
+                    .expect("Error joining group from StagedWelcome");
+                log::info!("Joined group with ID: {:?}", group.group_id().as_slice());
+                self.group = group;
+            },
+            Err(e) => {
+                log::error!("Error processing staged join: {:?}", e);
+            },
+        }
+        
     }
 
     fn handle_incoming_group_info(&mut self, _group_info: VerifiableGroupInfo) {
