@@ -45,15 +45,32 @@ The containers are built through the `Dockerfile`, an their individual names and
 - Make sure the lab machine and the Jetson Nano is connected via Ethernet. 
 	- `enp0s31f6` should be chosen as the physical interface on the *host*.
 	- `eth0` should be set as the physical interface on the Jetson nano, with the IP address `10.0.0.100` added to the interface.
-
-**How-to**:
-1. Move into the `/home/lab/lab/docker` directory on the host machine.
-2. Run `docker-compose build`, (if you have not built the images yet or have made changes to the Dockerfile). 
-3. Start the containers and the netwwork with `docker-compose up -d`
-4. Verify tht containers and the netowrk are running correctly with `docker ps`
-4. Attach to one of the containers using `docker exec --privileged -it node2 bash`
-5. Start Corosync (in the container or wherever it is required):  `corosync`. (Add flag `-f` to run in foreground, which will show you Corosync output in real-time.)   
  
+
+## Docker 
+### Build docker images 
+ ```bash
+   docker-compose build 
+   ```
+
+### Start docker containers in detached mode  
+ ```bash
+   docker-compose up -d
+   ```
+
+### Jump into container (node2 is the name of the container) 
+ ```bash
+   docker exec --privileged -it node2 bash
+   ```
+
+### Copy recompiled Rust binary into container
+ ```bash
+cargo build --release
+docker cp target/release/valkyrie-mls <container_name>:/valkyrie-mls/valkyrie-mls
+docker restart <container_name>
+   ```
+
+
 
 ## Corosync
 ### Start Corosync, configuration is determined through corosync.conf. Might have to use sudo to run with correct permissions  
