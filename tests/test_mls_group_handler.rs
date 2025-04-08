@@ -13,7 +13,7 @@ use openmls_rust_crypto::OpenMlsRustCrypto;
 ///  + Alice sends a message to Bob
 ///  + Bob updates and commits
 ///  + Alice updates and commits
-///  - Bob adds Charlie
+///  + Bob adds Charlie
 ///  - Charlie sends a message to the group
 ///  - Charlie updates and commits
 ///  - Charlie removes Bob
@@ -139,28 +139,28 @@ fn test_mls_group_operations() {
         "Alice's Pending Key Package Hashmap should consist of Charlie's key package");
 
     // === Bob adds Charlie ===
-    // let result = bob_mls_engine.add_pending_key_packages().unwrap();
-    // assert_eq!(result.len(), 1, "Add operation should return one (GroupCommit, Welcome) tuple.");
+    let result = bob_mls_engine.add_pending_key_packages().unwrap();
+    assert_eq!(result.len(), 1, "Add operation should return one (GroupCommit, Welcome) tuple.");
 
-    // let (group_commit, welcome ) = result[0].clone();
+    let (group_commit, welcome ) = result[0].clone();
     
-    // alice_mls_engine
-    //     .process_incoming_delivery_service_message(&group_commit)
-    //     .unwrap();
+    alice_mls_engine
+        .process_incoming_delivery_service_message(&group_commit)
+        .unwrap();
     
-    // charlie_mls_engine
-    //     .process_incoming_delivery_service_message(&welcome)
-    //     .unwrap();  
+    charlie_mls_engine
+        .process_incoming_delivery_service_message(&welcome)
+        .unwrap();  
     
-    // // Verify that the group states are the same.
-    // assert_eq!(alice_mls_engine.group().members().count(), 3, "Alice should have three members in the group after adding Charlie.");
-    // assert_eq!(bob_mls_engine.group().members().count(), 3, "Bob should have three members in the group after adding Charlie.");
-    // assert_eq!(charlie_mls_engine.group().members().count(), 3, "Charlie should have three members in the group after joining.");  
+    // Verify that the group states are the same.
+    assert_eq!(alice_mls_engine.group().members().count(), 3, "Alice should have three members in the group after adding Charlie.");
+    assert_eq!(bob_mls_engine.group().members().count(), 3, "Bob should have three members in the group after adding Charlie.");
+    assert_eq!(charlie_mls_engine.group().members().count(), 3, "Charlie should have three members in the group after joining.");  
     
-    // assert_eq!(alice_mls_engine.group().epoch(), bob_mls_engine.group().epoch(), "Alice and Bob should be in the same epoch after adding Charlie.");
-    // assert_eq!(alice_mls_engine.group().epoch(), charlie_mls_engine.group().epoch(), "Alice and Charlie should be in the same epoch after Charlie's join.");
+    assert_eq!(alice_mls_engine.group().epoch(), bob_mls_engine.group().epoch(), "Alice and Bob should be in the same epoch after adding Charlie.");
+    assert_eq!(alice_mls_engine.group().epoch(), charlie_mls_engine.group().epoch(), "Alice and Charlie should be in the same epoch after Charlie's join.");
 
-    // // Verify Alice has cleared here pending key packages
-    // assert!(alice_mls_engine.pending_key_packages().is_empty(), "Alice should have no pending key packages after adding Charlie.");
+    // Verify Alice has cleared here pending key packages
+    assert!(alice_mls_engine.pending_key_packages().is_empty(), "Alice should have no pending key packages after adding Charlie.");
 
 }
