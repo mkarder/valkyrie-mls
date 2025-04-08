@@ -343,41 +343,22 @@ impl MlsSwarmLogic for MlsEngine {
     }
 
     fn add_pending_key_packages(&mut self) -> Result<(Vec<u8>, Vec<u8>), Error> {
-        
         let mut key_packages = Vec::new();
         for (_key_ref, key_package) in self.pending_key_packages.iter() {
             key_packages.push(key_package.clone());
-            /* 
-            let (group_commit, welcome, _group_info) = self
-                .group
-                .add_members(&self.provider, &self.signature_key, &[key_package.clone()])
-                .expect("Could not add members.");
-            log::info!(
-                "Added new member to group with ID: {:?}",
-                self.group.group_id()
-            );
-            // TODO: Fix error handling. This will panic if serialization fails.
-            let group_commit_out = group_commit
-                .tls_serialize_detached()
-                .expect("Error serializing group commit");
-            let welcome_out = welcome
-                .tls_serialize_detached()
-                .expect("Error serializing welcome");
-            welcome_and_commits.push((group_commit_out, welcome_out));
-            */
         }
         let (group_commit, welcome, _group_info) = self
             .group
-            .add_members(&self.provider, &self.signature_key, &key_packages)
-            .expect("Could not add members.");
+            .add_members(&self.provider, &self.signature_key, &key_packages)?;
+
         let group_commit_out = group_commit
             .tls_serialize_detached()
             .expect("Error serializing group commit");
+        
         let welcome_out = welcome
             .tls_serialize_detached()
             .expect("Error serializing welcome");
         
-        // Apply changes to own group and clear pending key packages
         let _ = self.group.merge_pending_commit(&self.provider);
         self.pending_key_packages.clear();
         
