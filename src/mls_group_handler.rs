@@ -26,7 +26,7 @@ pub trait MlsSwarmLogic {
         &mut self,
         key_package_bytes: &[u8],
     ) -> (Vec<u8>, Vec<u8>);
-    fn add_pending_key_packages(&mut self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error>;
+    fn add_pending_key_packages(&mut self) -> Result<(Vec<u8>, Vec<u8>), Error>;
 
     fn remove_member(&mut self, leaf_node: LeafNodeIndex)
         -> (Vec<u8>, Option<Vec<u8>>);
@@ -342,9 +342,12 @@ impl MlsSwarmLogic for MlsEngine {
         (group_commit_out, welcome_out)
     }
 
-    fn add_pending_key_packages(&mut self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
-        let mut welcome_and_commits = Vec::new();
+    fn add_pending_key_packages(&mut self) -> Result<(Vec<u8>, Vec<u8>), Error> {
+        
+        let mut key_packages = Vec::new();
         for (_key_ref, key_package) in self.pending_key_packages.iter() {
+            key_packages.push(key_package.clone());
+            /* 
             let (group_commit, welcome, _group_info) = self
                 .group
                 .add_members(&self.provider, &self.signature_key, &[key_package.clone()])
@@ -361,12 +364,24 @@ impl MlsSwarmLogic for MlsEngine {
                 .tls_serialize_detached()
                 .expect("Error serializing welcome");
             welcome_and_commits.push((group_commit_out, welcome_out));
+            */
         }
+        let (group_commit, welcome, _group_info) = self
+            .group
+            .add_members(&self.provider, &self.signature_key, &key_packages)
+            .expect("Could not add members.");
+        let group_commit_out = group_commit
+            .tls_serialize_detached()
+            .expect("Error serializing group commit");
+        let welcome_out = welcome
+            .tls_serialize_detached()
+            .expect("Error serializing welcome");
+        
         // Apply changes to own group and clear pending key packages
         let _ = self.group.merge_pending_commit(&self.provider);
         self.pending_key_packages.clear();
         
-        Ok(welcome_and_commits)
+        Ok((group_commit_out, welcome_out))
     }
 
     fn handle_incoming_commit(&mut self, commit: StagedCommit) {

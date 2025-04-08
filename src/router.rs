@@ -216,16 +216,13 @@ impl Router {
                               .expect("Failed to send message through Corosync");
                         }
                         Ok(Command::AddPending) => {
-                            let out = self.mls_group_handler.add_pending_key_packages()?;
-                            if !out.is_empty() {
-                                for (group_commit, welcome) in out {
+                            let (group_commit, welcome) = self.mls_group_handler.add_pending_key_packages()?;
                                     corosync::send_message(&self.corosync_handle, group_commit.as_slice())
                                         .expect("Failed to send message through Corosync");
                                     corosync::send_message(&self.corosync_handle, welcome.as_slice())
                                         .expect("Failed to send message through Corosync");
-                                }
                             }
-                        }
+                        
                         Ok(Command::Remove{index}) => {
                             let (commit, _welcome_option) = self.mls_group_handler.remove_member(LeafNodeIndex::new(index));
                             corosync::send_message(&self.corosync_handle, commit.as_slice())

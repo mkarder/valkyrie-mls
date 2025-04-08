@@ -62,12 +62,10 @@ fn test_mls_group_operations() {
         "Alice's Pending Key Package Hashmap should consist of Bob's key package"); 
     
     // === Alice adds Bob ===
-    let result = alice_mls_engine.add_pending_key_packages().unwrap();
-    assert_eq!(result.len(), 1, "Add operation should return one (GroupCommit, Welcome) tuple.");
-    assert_eq!(alice_mls_engine.group().members().count(), 2, "Alice should have two members in the group after adding Bob.");
+    let (_group_commit, bob_welcome )  = alice_mls_engine.add_pending_key_packages().unwrap();
+    assert_eq!(alice_mls_engine.group().members().count(), 2, "Alice should have two members in the group afterq adding Bob.");
     
     // Bob receives the welcome message and joins the group
-    let (_group_commit, bob_welcome) = result[0].clone();
     bob_mls_engine.process_incoming_delivery_service_message(&bob_welcome).unwrap();
     assert_eq!(bob_mls_engine.group().members().count(), 2, "Bob should have two members in the group after joining.");
     
@@ -139,11 +137,9 @@ fn test_mls_group_operations() {
         "Alice's Pending Key Package Hashmap should consist of Charlie's key package");
 
     // === Bob adds Charlie ===
-    let result = bob_mls_engine.add_pending_key_packages().unwrap();
-    assert_eq!(result.len(), 1, "Add operation should return one (GroupCommit, Welcome) tuple.");
+    let (group_commit, welcome )  = bob_mls_engine.add_pending_key_packages().unwrap();
 
-    let (group_commit, welcome ) = result[0].clone();
-    
+       
     alice_mls_engine
         .process_incoming_delivery_service_message(&group_commit)
         .unwrap();
