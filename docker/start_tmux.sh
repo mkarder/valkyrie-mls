@@ -18,15 +18,18 @@ tmux split-window -v -t $SESSION:0.1
 
 #Commands
 tmux send-keys -t $SESSION:0.0 'docker exec --privileged -it node2 bash' C-m
+tmux send-keys -t $SESSION:0.0 'cd valkyrie-mls/' C-m
 tmux send-keys -t $SESSION:0.0 './valkyrie-mls' C-m
 
 tmux send-keys -t $SESSION:0.1 'docker exec --privileged -it node3 bash' C-m
+tmux send-keys -t $SESSION:0.1 'cd valkyrie-mls/' C-m
 tmux send-keys -t $SESSION:0.1 './valkyrie-mls' C-m
 
 tmux send-keys -t $SESSION:0.2 'docker exec --privileged -it node4 bash' C-m
+tmux send-keys -t $SESSION:0.2 'cd valkyrie-mls/' C-m
 tmux send-keys -t $SESSION:0.2 './valkyrie-mls' C-m
 
-tmux send-keys -t $SESSION:0.3 'cargo run --bin command' C-m
+tmux send-keys -t $SESSION:0.3 '~/valkyrie-mls/target/debug/command' C-m
 
 # Focus top-left pane and attach
 tmux select-pane -t $SESSION:0.0
