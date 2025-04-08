@@ -173,6 +173,9 @@ impl Router {
             log::info!("Got works");
         });
 
+        // Thread for generating regular update messages
+        let mut update_interval = tokio::time::interval(Duration::from_secs(self.mls_group_handler.update_interval_secs()));
+
         loop {
             select! {
                 biased;
@@ -302,6 +305,14 @@ impl Router {
                         .send_to(data.as_slice(), format!("{}:{}", self.config.multicast_ip, self.config.multicast_port))
                         .await
                         .context("Failed to forward packet to application")?;
+                }
+
+                _ = update_interval.tick() => {
+                    log::info!("⏰ Performing scheduled self-update...");
+                    match self.mls_group_handler.update_self() {
+                        Ok(_) => log::info!("✅ Self-update successful."),
+                        Err(e) => log::error!("❌ Self-update failed: {:?}", e),
+                    }
                 }
 
                 // Handle Ctrl+C (Shutdown)

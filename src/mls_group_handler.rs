@@ -16,6 +16,7 @@ pub struct MlsEngine {
     signature_key: SignatureKeyPair,
     key_package: KeyPackageBundle,
     pending_key_packages: HashMap<KeyPackageRef, KeyPackage>,
+    update_interval_secs: u64,
 }
 
 pub trait MlsSwarmLogic {
@@ -80,6 +81,8 @@ impl MlsEngine {
             .use_ratchet_tree_extension(true)
             .build(&provider, &signature_key, credential.clone())
             .expect("An unexpected error occurred.");
+        
+        let update_interval_secs = config.update_interval_secs;
 
         MlsEngine {
             config,
@@ -88,6 +91,7 @@ impl MlsEngine {
             signature_key,
             key_package,
             pending_key_packages: HashMap::new(),
+            update_interval_secs,
         }
     }
 
@@ -109,6 +113,10 @@ impl MlsEngine {
 
     pub fn group(&self) -> &MlsGroup {
         &self.group
+    }
+
+    pub fn update_interval_secs(&self) -> u64 {
+        self.update_interval_secs
     }
 }
 
