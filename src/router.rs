@@ -300,14 +300,18 @@ impl Router {
                     Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; MLS_MSG_BUFFER_SIZE])>
                 } => {
                     log::info!("Application → MLS: {} bytes from {}", size, src);
-                    let data = self.mls_group_handler
-                        .process_outgoing_application_message(&buf[..size])
-                        .expect("Failed to process outgoing application data.");
-                    tx_network_socket
-                        .send_to(data.as_slice(), format!("{}:{}", self.config.multicast_ip, self.config.multicast_port))
-                        .await
-                        .context("Failed to forward packet to application")?;
-                }
+                    match self.mls_group_handler.process_outgoing_application_message(&buf[..size]){
+                        Ok(data) => {
+                            tx_network_socket
+                                .send_to(data.as_slice(), format!("{}:{}", self.config.multicast_ip, self.config.multicast_port))
+                                .await
+                                .context("Failed to forward packet to network")?;
+                        }
+                        Err(e) => {
+                            log::warn!("Error processing appData coming from application: {}", e);
+                        }
+                    }
+                }                
 
                 // Handle Ctrl+C (Shutdown)
                 _ = signal::ctrl_c() => {
