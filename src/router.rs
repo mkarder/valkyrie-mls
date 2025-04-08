@@ -275,43 +275,49 @@ impl Router {
                         Err(_) => todo!(),
                                             }
                 }
-
-                // Encrypted AppData coming in from radio network, being sent to MLS_group_handler for decryption, then forwarded to Application
-                Ok((size, src, buf)) = async {
-                    let mut buf = [0u8; MLS_MSG_BUFFER_SIZE];
-                    let (size, src) = rx_network_socket.recv_from(&mut buf).await?;
-                    Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; MLS_MSG_BUFFER_SIZE])>
-                } => {
-                    log::info!("Network → MLS: {} bytes from {}", size, src);
-                    match self.mls_group_handler.process_incoming_network_message(&buf[..size]){
-                        Ok(data) => {
-                            tx_app_socket
-                                .send_to(data.as_slice(), self.config.tx_app_sock_addr.clone())
-                                .await
-                                .context("Failed to forward packet to application")?;
-                        }
-                        Err(e) => {
-                            log::warn!("Error processing incoming network message: {}", e);
-                            // Optionally: continue, return, or handle differently
-                        }
+              // Encrypted AppData coming in from radio network, being sent to MLS_group_handler for decryption, then forwarded to Application
+              Ok((size, src, buf)) = async {
+                let mut buf = [0u8; MLS_MSG_BUFFER_SIZE];
+                let (size, src) = rx_network_socket.recv_from(&mut buf).await?;
+                Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; MLS_MSG_BUFFER_SIZE])>
+            } => {
+                log::info!("Network → MLS: {} bytes from {}", size, src);
+                match self.mls_group_handler.process_incoming_network_message(&buf[..size]){
+                    Ok(data) => {
+                        tx_app_socket
+                            .send_to(data.as_slice(), self.config.tx_app_sock_addr.clone())
+                            .await
+                            .context("Failed to forward packet to application")?;
+                    }
+                    Err(e) => {
+                        log::warn!("Error processing incoming network message: {}", e);
+                        // Optionally: continue, return, or handle differently
                     }
                 }
+            }
 
-                // Unencrypted AppData coming in from application, being sent to MLS_group_handler for encryption, then forwarded to radio network.
-                Ok((size, src, buf)) = async {
-                    let mut buf = [0u8; MLS_MSG_BUFFER_SIZE];
-                    let (size, src) = rx_app_socket.recv_from(&mut buf).await?;
-                    Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; MLS_MSG_BUFFER_SIZE])>
-                } => {
-                    log::info!("Application → MLS: {} bytes from {}", size, src);
-                    let data = self.mls_group_handler
-                        .process_outgoing_application_message(&buf[..size])
-                        .expect("Failed to process outgoing application data.");
-                    tx_network_socket
-                        .send_to(data.as_slice(), format!("{}:{}", self.config.multicast_ip, self.config.multicast_port))
-                        .await
-                        .context("Failed to forward packet to application")?;
+            // Unencrypted AppData coming in from application, being sent to MLS_group_handler for encryption, then forwarded to radio network.
+            Ok((size, src, buf)) = async {
+                let mut buf = [0u8; MLS_MSG_BUFFER_SIZE];
+                let (size, src) = rx_app_socket.recv_from(&mut buf).await?;
+                Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; MLS_MSG_BUFFER_SIZE])>
+            } => {
+                log::info!("Application → MLS: {} bytes from {}", size, src);
+                match self.mls_group_handler.process_outgoing_application_message(&buf[..size]){
+                    Ok(data) => {
+                        tx_network_socket
+                            .send_to(data.as_slice(), format!("{}:{}", self.config.multicast_ip, self.config.multicast_port))
+                            .await
+                            .context("Failed to forward packet to network")?;
+                    }
+                    Err(e) => {
+                        log::warn!("Error processing appData coming from application: {}", e);
+                    }
                 }
+            }  
+
+
+
 
                 _ = update_interval.tick() => {
                     log::info!("⏰ Performing scheduled self-update...");
