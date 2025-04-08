@@ -22,6 +22,7 @@ pub struct RouterConfig {
 pub struct MlsConfig {
     pub node_id: String,
     pub credential_type: String,
+    pub update_interval_secs: u64,
 }
 
 impl Config {

@@ -6,6 +6,8 @@ use anyhow::{Ok, Result};
 mod router;
 #[cfg(target_os = "linux")]
 mod corosync;
+use config::Config;
+use mls_group_handler::MlsEngine;
 #[cfg(target_os = "linux")]
 use router::Router;
 
