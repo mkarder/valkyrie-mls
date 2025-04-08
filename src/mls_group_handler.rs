@@ -17,6 +17,7 @@ pub struct MlsEngine {
     signature_key: SignatureKeyPair,
     key_package: KeyPackageBundle,
     pending_key_packages: HashMap<KeyPackageRef, KeyPackage>,
+    update_interval_secs: u64,
 }
 
 pub trait MlsSwarmLogic {
@@ -80,6 +81,7 @@ impl MlsEngine {
             )
             .expect("Error creating group");
             
+
         
         let update_interval_secs = config.update_interval_secs;
 
@@ -91,6 +93,7 @@ impl MlsEngine {
             signature_key,
             key_package,
             pending_key_packages: HashMap::new(),
+            update_interval_secs,
         }
     }
 
@@ -112,6 +115,10 @@ impl MlsEngine {
 
     pub fn group(&self) -> &MlsGroup {
         &self.group
+    }
+
+    pub fn update_interval_secs(&self) -> u64 {
+        self.update_interval_secs
     }
 }
 
@@ -408,27 +415,26 @@ impl MlsSwarmLogic for MlsEngine {
             .self_update(
                 &self.provider,
                 &self.signature_key,
-                LeafNodeParameters::default()
-            ) {
-                Ok((group_commit, welcome_option, _group_info)) => {
-                    let group_commit_out = group_commit
-                        .tls_serialize_detached()
-                        .expect("Error serializing group commit");
-                    let welcome_out = welcome_option // Only process welcome if it is Some 
-                        .map(|welcome| {
-                            welcome
-                                .tls_serialize_detached()
-                                .expect("Error serializing welcome")
-                        });
-                        let _ = self.group.merge_pending_commit(&self.provider);
-                    log::info!("Updated self in group with ID: {:?}", self.group.group_id());
-                        return Ok((group_commit_out, welcome_out))
-                }
-                Err(e) => {
-                    log::error!("Error updating self: {:?}", e);
-                    return Err(Error::msg("Error updating self"));
-                }
-        }
+                LeafNodeParameters::default(),
+            )
+            .expect("Error updating self");
+    
+        // TODO: Fix error handling. This will panic if serialization fails.
+        let group_commit_out = group_commit
+            .tls_serialize_detached()
+            .expect("Error serializing group commit");
+        let welcome_out = welcome_option // Only process welcome if it is Some 
+            .map(|welcome| {
+                welcome
+                    .tls_serialize_detached()
+                    .expect("Error serializing welcome")
+            });
+        
+        // Apply changes to own group
+        let _ = self.group.merge_pending_commit(&self.provider);
+
+        (group_commit_out, welcome_out)
+
     }
 
     /// Helper function to retrieve the ratchet tree from the group.
