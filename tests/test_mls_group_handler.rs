@@ -42,7 +42,6 @@ fn test_mls_group_operations() {
 
     let alice_provider = &OpenMlsRustCrypto::default();
     let bob_provider = &OpenMlsRustCrypto::default();
-    let charlie_provider = &OpenMlsRustCrypto::default();
 
     // Generate three MLS Engines
     let mut alice_mls_engine = MlsEngine::new(alice_config);
