@@ -14,8 +14,7 @@ pub struct RouterConfig {
     pub rx_app_sock_addr: String,
     pub tx_app_sock_addr: String,
     pub multicast_ip: String,
-    pub rx_multicast_port: u16,
-    pub tx_multicast_port: u16,
+    pub multicast_port: u16,
 }
 
 #[derive(Debug, Deserialize, Clone)]

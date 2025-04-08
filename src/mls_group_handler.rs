@@ -17,6 +17,7 @@ pub struct MlsEngine {
     signature_key: SignatureKeyPair,
     key_package: KeyPackageBundle,
     pending_key_packages: HashMap<KeyPackageRef, KeyPackage>,
+    update_interval_secs: u64,
 }
 
 pub trait MlsSwarmLogic {
@@ -30,7 +31,7 @@ pub trait MlsSwarmLogic {
     fn remove_member(&mut self, leaf_node: LeafNodeIndex)
         -> (Vec<u8>, Option<Vec<u8>>);
 
-    fn update_self(&mut self) -> (Vec<u8>, Option<Vec<u8>>);
+    fn update_self(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error>;
 
     #[allow(dead_code)]
     fn retrieve_ratchet_tree(&self) -> Vec<u8>;
@@ -80,6 +81,7 @@ impl MlsEngine {
             )
             .expect("Error creating group");
             
+
         
         let update_interval_secs = config.update_interval_secs;
 
@@ -91,6 +93,7 @@ impl MlsEngine {
             signature_key,
             key_package,
             pending_key_packages: HashMap::new(),
+            update_interval_secs,
         }
     }
 
@@ -112,6 +115,10 @@ impl MlsEngine {
 
     pub fn group(&self) -> &MlsGroup {
         &self.group
+    }
+
+    pub fn update_interval_secs(&self) -> u64 {
+        self.update_interval_secs
     }
 }
 
@@ -182,6 +189,10 @@ impl MlsSwarmLogic for MlsEngine {
         &mut self,
         mut buf: &[u8],
     ) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
+        log::debug!("Processing incoming delivery service message. \n Group epoch before processing: {:?}", 
+            self.group.epoch()
+            );
+
         let message_in =
             MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
         match message_in.extract() {
@@ -368,7 +379,7 @@ impl MlsSwarmLogic for MlsEngine {
         let _ = self
             .group
             .merge_staged_commit(&self.provider, commit)
-            .context("Error handling staged commit.");
+            .expect("Error handling staged commit.");
     }
 
     fn remove_member(
@@ -393,9 +404,14 @@ impl MlsSwarmLogic for MlsEngine {
         (group_commit_out, welcome_out)
     }
 
-    fn update_self(&mut self) -> (Vec<u8>, Option<Vec<u8>>) {
-        let (group_commit, welcome_option, _group_info) = self
-            .group
+    fn update_self(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
+        let pending = self.group.pending_commit();
+        if pending.is_some() {
+            log::error!("Pending commit exists. Cannot update self. \n Pending commit: {:?}", pending);
+            return Err(Error::msg("Pending commit exists. Cannot update self."));
+        }
+
+        match self.group
             .self_update(
                 &self.provider,
                 &self.signature_key,
@@ -418,6 +434,7 @@ impl MlsSwarmLogic for MlsEngine {
         let _ = self.group.merge_pending_commit(&self.provider);
 
         (group_commit_out, welcome_out)
+
     }
 
     /// Helper function to retrieve the ratchet tree from the group.

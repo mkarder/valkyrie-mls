@@ -50,11 +50,13 @@ ARG NODE_ID
 ENV NODE_NAME=$NODE_NAME
 ENV NODE_IP=$NODE_IP
 ENV NODE_ID=$NODE_ID
+ENV RUST_LOG=debug 
 
 # Install only the packages needed at runtime
 RUN apt-get update && apt-get install -y \
     iputils-ping \
     iproute2 \
+    iperf \
     iperf3 \
     corosync \
     nano \
