@@ -279,13 +279,18 @@ impl Router {
                     Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; MLS_MSG_BUFFER_SIZE])>
                 } => {
                     log::info!("Network → MLS: {} bytes from {}", size, src);
-                    let data = self.mls_group_handler
-                        .process_incoming_network_message(&buf[..size])
-                        .expect("Failed to process incoming multicast packet.");
-                    tx_app_socket
-                        .send_to(data.as_slice(), self.config.tx_app_sock_addr.clone())
-                        .await
-                        .context("Failed to forward packet to application")?;
+                    match self.mls_group_handler.process_incoming_network_message(&buf[..size]){
+                        Ok(data) => {
+                            tx_app_socket
+                                .send_to(data.as_slice(), self.config.tx_app_sock_addr.clone())
+                                .await
+                                .context("Failed to forward packet to application")?;
+                        }
+                        Err(e) => {
+                            log::warn!("Error processing incoming network message: {}", e);
+                            // Optionally: continue, return, or handle differently
+                        }
+                    }
                 }
 
                 // Unencrypted AppData coming in from application, being sent to MLS_group_handler for encryption, then forwarded to radio network.
