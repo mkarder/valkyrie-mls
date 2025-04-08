@@ -1,6 +1,6 @@
 use crate::config::MlsConfig;
 use anyhow::{Context, Error};
-use openmls::group::MlsGroup;
+use openmls::group::{self, MlsGroup};
 use openmls::prelude::{group_info::VerifiableGroupInfo, *};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
@@ -11,6 +11,7 @@ use tls_codec::{Deserialize, Serialize};
 #[allow(dead_code)]
 pub struct MlsEngine {
     config: MlsConfig,
+    group_join_config: MlsGroupJoinConfig,
     provider: OpenMlsRustCrypto,
     group: MlsGroup,
     signature_key: SignatureKeyPair,
@@ -69,20 +70,22 @@ impl MlsEngine {
 
         let key_package =
             generate_key_package(cipher, &provider, &signature_key, credential.clone());
+        let group_join_config = generate_group_config();
 
-        let group = MlsGroup::builder()
-            .padding_size(0)
-            .sender_ratchet_configuration(SenderRatchetConfiguration::new(
-                10,   // out_of_order_tolerance
-                2000, // maximum_forward_distance
-            ))
-            .ciphersuite(cipher)
-            .use_ratchet_tree_extension(true)
-            .build(&provider, &signature_key, credential.clone())
-            .expect("An unexpected error occurred.");
+        let group = MlsGroup::new(
+            &provider,
+            &signature_key,
+            &generate_group_create_config(),
+            credential,
+            )
+            .expect("Error creating group");
+            
+        
+        let update_interval_secs = config.update_interval_secs;
 
         MlsEngine {
             config,
+            group_join_config,
             provider,
             group,
             signature_key,
@@ -273,7 +276,7 @@ impl MlsSwarmLogic for MlsEngine {
         log::debug!("Node {:?} received Welcome message: {:?}", self.config.node_id, welcome);
         let staged_join = match StagedWelcome::new_from_welcome(
             &self.provider,
-            &MlsGroupJoinConfig::default(),
+            &self.group_join_config,
             welcome,
             None,
         ) {
@@ -347,8 +350,10 @@ impl MlsSwarmLogic for MlsEngine {
                 .expect("Error serializing welcome");
             welcome_and_commits.push((group_commit_out, welcome_out));
         }
+        // Apply changes to own group and clear pending key packages
         let _ = self.group.merge_pending_commit(&self.provider);
         self.pending_key_packages.clear();
+        
         Ok(welcome_and_commits)
     }
 
@@ -403,27 +408,25 @@ impl MlsSwarmLogic for MlsEngine {
             .self_update(
                 &self.provider,
                 &self.signature_key,
-                LeafNodeParameters::default()
-            ) {
-                Ok((group_commit, welcome_option, _group_info)) => {
-                    let group_commit_out = group_commit
-                        .tls_serialize_detached()
-                        .expect("Error serializing group commit");
-                    let welcome_out = welcome_option // Only process welcome if it is Some 
-                        .map(|welcome| {
-                            welcome
-                                .tls_serialize_detached()
-                                .expect("Error serializing welcome")
-                        });
-                        let _ = self.group.merge_pending_commit(&self.provider);
-                    log::info!("Updated self in group with ID: {:?}", self.group.group_id());
-                        return Ok((group_commit_out, welcome_out))
-                }
-                Err(e) => {
-                    log::error!("Error updating self: {:?}", e);
-                    return Err(Error::msg("Error updating self"));
-                }
-        }
+                LeafNodeParameters::default(),
+            )
+            .expect("Error updating self");
+    
+        // TODO: Fix error handling. This will panic if serialization fails.
+        let group_commit_out = group_commit
+            .tls_serialize_detached()
+            .expect("Error serializing group commit");
+        let welcome_out = welcome_option // Only process welcome if it is Some 
+            .map(|welcome| {
+                welcome
+                    .tls_serialize_detached()
+                    .expect("Error serializing welcome")
+            });
+        
+        // Apply changes to own group
+        let _ = self.group.merge_pending_commit(&self.provider);
+
+        (group_commit_out, welcome_out)
     }
 
     /// Helper function to retrieve the ratchet tree from the group.
@@ -483,4 +486,26 @@ fn generate_key_package(
     KeyPackage::builder()
         .build(ciphersuite, provider, signer, credential_with_key)
         .unwrap()
+}
+
+fn generate_group_config() -> MlsGroupJoinConfig {
+    MlsGroupJoinConfig::builder()
+        .padding_size(0)
+        .sender_ratchet_configuration(SenderRatchetConfiguration::new(
+            10,   // out_of_order_tolerance
+            2000, // maximum_forward_distance
+        ))
+        .use_ratchet_tree_extension(true)
+        .build()
+}
+
+fn generate_group_create_config() -> MlsGroupCreateConfig {
+    MlsGroupCreateConfig::builder()
+        .padding_size(0)
+        .sender_ratchet_configuration(SenderRatchetConfiguration::new(
+            10,   // out_of_order_tolerance
+            2000, // maximum_forward_distance
+        ))
+        .use_ratchet_tree_extension(true)
+        .build()
 }
