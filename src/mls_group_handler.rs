@@ -1,6 +1,6 @@
 use crate::config::MlsConfig;
-use anyhow::{Context, Error, Ok};
-use openmls::group::MlsGroup;
+use anyhow::{Context, Error};
+use openmls::group::{self, MlsGroup};
 use openmls::prelude::{group_info::VerifiableGroupInfo, *};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
@@ -11,6 +11,7 @@ use tls_codec::{Deserialize, Serialize};
 #[allow(dead_code)]
 pub struct MlsEngine {
     config: MlsConfig,
+    group_join_config: MlsGroupJoinConfig,
     provider: OpenMlsRustCrypto,
     group: MlsGroup,
     signature_key: SignatureKeyPair,
@@ -69,20 +70,22 @@ impl MlsEngine {
 
         let key_package =
             generate_key_package(cipher, &provider, &signature_key, credential.clone());
+        let group_join_config = generate_group_config();
 
-        let group = MlsGroup::builder()
-            .padding_size(0)
-            .sender_ratchet_configuration(SenderRatchetConfiguration::new(
-                10,   // out_of_order_tolerance
-                2000, // maximum_forward_distance
-            ))
-            .ciphersuite(cipher)
-            .use_ratchet_tree_extension(true)
-            .build(&provider, &signature_key, credential.clone())
-            .expect("An unexpected error occurred.");
+        let group = MlsGroup::new(
+            &provider,
+            &signature_key,
+            &generate_group_create_config(),
+            credential,
+            )
+            .expect("Error creating group");
+            
+        
+        let update_interval_secs = config.update_interval_secs;
 
         MlsEngine {
             config,
+            group_join_config,
             provider,
             group,
             signature_key,
@@ -266,7 +269,7 @@ impl MlsSwarmLogic for MlsEngine {
         log::warn!("TODO: Verify welcome message before joining group.");
         let staged_join = StagedWelcome::new_from_welcome(
             &self.provider,
-            &MlsGroupJoinConfig::default(),
+            &self.group_join_config,
             welcome,
             None,
         )
@@ -474,4 +477,26 @@ fn generate_key_package(
     KeyPackage::builder()
         .build(ciphersuite, provider, signer, credential_with_key)
         .unwrap()
+}
+
+fn generate_group_config() -> MlsGroupJoinConfig {
+    MlsGroupJoinConfig::builder()
+        .padding_size(0)
+        .sender_ratchet_configuration(SenderRatchetConfiguration::new(
+            10,   // out_of_order_tolerance
+            2000, // maximum_forward_distance
+        ))
+        .use_ratchet_tree_extension(true)
+        .build()
+}
+
+fn generate_group_create_config() -> MlsGroupCreateConfig {
+    MlsGroupCreateConfig::builder()
+        .padding_size(0)
+        .sender_ratchet_configuration(SenderRatchetConfiguration::new(
+            10,   // out_of_order_tolerance
+            2000, // maximum_forward_distance
+        ))
+        .use_ratchet_tree_extension(true)
+        .build()
 }
