@@ -281,20 +281,25 @@ impl MlsSwarmLogic for MlsEngine {
     fn handle_incoming_welcome(&mut self, welcome: Welcome) {
         log::warn!("TODO: Verify welcome message before joining group.");
         log::debug!("Node {:?} received Welcome message: {:?}", self.config.node_id, welcome);
-        let staged_join = match StagedWelcome::new_from_welcome(
+        let _ = match StagedWelcome::new_from_welcome(
             &self.provider,
             &self.group_join_config,
             welcome,
             None,
         ) {
-            Ok(join) => join,
+            Ok(staged_join) =>  {
+                let group = staged_join
+                    .into_group(&self.provider)
+                    .expect("Error joining group from StagedWelcome");
+                log::info!("Joined group with ID: {:?}", group.group_id().as_slice());
+                self.group = group;
+            },
             Err(e) => {
                 log::error!("Error constructing staged join: {:?}", e);
                 return;
             }
         };
 
-        // use `staged_join` here
     }
     
 
@@ -416,25 +421,26 @@ impl MlsSwarmLogic for MlsEngine {
                 &self.provider,
                 &self.signature_key,
                 LeafNodeParameters::default(),
-            )
-            .expect("Error updating self");
-    
-        // TODO: Fix error handling. This will panic if serialization fails.
-        let group_commit_out = group_commit
-            .tls_serialize_detached()
-            .expect("Error serializing group commit");
-        let welcome_out = welcome_option // Only process welcome if it is Some 
-            .map(|welcome| {
-                welcome
-                    .tls_serialize_detached()
-                    .expect("Error serializing welcome")
-            });
-        
-        // Apply changes to own group
-        let _ = self.group.merge_pending_commit(&self.provider);
-
-        (group_commit_out, welcome_out)
-
+            ){
+                Ok((group_commit, welcome_option, _group_info)) => {
+                    let group_commit_out = group_commit
+                        .tls_serialize_detached()
+                        .expect("Error serializing group commit");
+                    let welcome_out = welcome_option // Only process welcome if it is Some 
+                        .map(|welcome| {
+                            welcome
+                                .tls_serialize_detached()
+                                .expect("Error serializing welcome")
+                        });
+                        let _ = self.group.merge_pending_commit(&self.provider);
+                    log::info!("Updated self in group with ID: {:?}", self.group.group_id());
+                        return Ok((group_commit_out, welcome_out));
+                }
+                Err(e) => {
+                    log::error!("Error updating self: {:?}", e);
+                    return Err(Error::msg("Error updating self"));
+                }
+        }
     }
 
     /// Helper function to retrieve the ratchet tree from the group.

@@ -92,7 +92,7 @@ fn test_mls_group_operations() {
 
     // === Bob updates and commits ===
     let (bob_update, _welcome_option) = bob_mls_engine
-        .update_self();
+        .update_self().unwrap();
 
     let _ = alice_mls_engine
         .process_incoming_delivery_service_message(&bob_update)
@@ -107,7 +107,7 @@ fn test_mls_group_operations() {
 
     // === Alice updates and commits ===
     let (alice_update, _welcome_option) = alice_mls_engine
-        .update_self();
+        .update_self().unwrap();
 
     let _ = bob_mls_engine
         .process_incoming_delivery_service_message(&alice_update)
