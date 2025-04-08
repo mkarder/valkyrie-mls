@@ -8,11 +8,11 @@ use openmls_rust_crypto::OpenMlsRustCrypto;
 /// `openmls-0.6.0/tests/mls_group.rs`. 
 /// The original test simulates various group operations like Add, Update, Remove in a
 /// small group. This test replicates the same operation through the use of `MlsEngine`. 
-///  - Alice creates a group
-///  - Alice adds Bob
-///  - Alice sends a message to Bob
-///  - Bob updates and commits
-///  - Alice updates and commits
+///  + Alice creates a group
+///  + Alice adds Bob
+///  + Alice sends a message to Bob
+///  + Bob updates and commits
+///  + Alice updates and commits
 ///  - Bob adds Charlie
 ///  - Charlie sends a message to the group
 ///  - Charlie updates and commits
