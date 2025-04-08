@@ -8,15 +8,34 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_LOG: debug
+  NODE_NAME: test-node
+  NODE_IP: 127.0.0.1
+  NODE_ID: 0
 
 jobs:
-  build:
-
+  test:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            corosync \
+            libcpg-dev \
+            libquorum-dev \
+            libvotequorum-dev \
+            libcfg-dev \
+            libcmap-dev \
+            libcorosync-common-dev
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Run tests
+        run: cargo test --verbose
