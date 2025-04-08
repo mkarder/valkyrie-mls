@@ -24,16 +24,19 @@ fn test_mls_group_operations() {
     let alice_config = MlsConfig {
         credential_type: "Basic".to_string(),
         node_id: "Alice".to_string(),
+        update_interval_secs: 100,
     };
 
     let bob_config = MlsConfig {
         credential_type: "Basic".to_string(),
         node_id: "Bob".to_string(),
+        update_interval_secs: 100,
     };
 
     let charlie_config = MlsConfig {
         credential_type: "Basic".to_string(),
         node_id: "Charlie".to_string(),
+        update_interval_secs: 100,
     };
 
     // Generate three MLS Engines
