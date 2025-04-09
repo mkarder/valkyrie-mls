@@ -216,13 +216,16 @@ impl Router {
                               .expect("Failed to send message through Corosync");
                         }
                         Ok(Command::AddPending) => {
-                            let (group_commit, welcome) = self.mls_group_handler.add_pending_key_packages()?;
+                            match self.mls_group_handler.add_pending_key_packages() {
+                                Ok((group_commit, welcome)) => {
                                     corosync::send_message(&self.corosync_handle, group_commit.as_slice())
                                         .expect("Failed to send message through Corosync");
                                     corosync::send_message(&self.corosync_handle, welcome.as_slice())
                                         .expect("Failed to send message through Corosync");
+                                }
+                                Err(e) => return Err(e.into()), // Or handle other errors
                             }
-                        
+                        }
                         Ok(Command::Remove{index}) => {
                             let (commit, _welcome_option) = self.mls_group_handler.remove_member(LeafNodeIndex::new(index));
                             corosync::send_message(&self.corosync_handle, commit.as_slice())
@@ -313,9 +316,6 @@ impl Router {
                 }
             }  
 
-
-
-
                 _ = update_interval.tick() => {
                     log::info!("⏰ Automatic scheduled self-update...");
                     match self.mls_group_handler.update_self() {
@@ -330,7 +330,6 @@ impl Router {
                         }
                         Err(e) => log::error!("❌ Self-update failed: {:?}", e),
                     }
-                
             }
 
                 // Handle Ctrl+C (Shutdown)

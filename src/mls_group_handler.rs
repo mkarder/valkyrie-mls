@@ -331,6 +331,14 @@ impl MlsSwarmLogic for MlsEngine {
         for (_key_ref, key_package) in self.pending_key_packages.iter() {
             key_packages.push(key_package.clone());
         }
+        
+        // Early return if there are no key packages to add
+        if key_packages.is_empty() {
+            // You could also return Ok with empty data if that fits your use case better
+            log::warn!("No key packages to add");
+            return Err(Error::msg("No key packages to add"));
+        }
+
         let (group_commit, welcome, _group_info) = self
             .group
             .add_members(&self.provider, &self.signature_key, &key_packages)?;
