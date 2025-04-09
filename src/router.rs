@@ -317,10 +317,10 @@ impl Router {
 
 
                 _ = update_interval.tick() => {
-                    log::info!("⏰ Performing scheduled self-update...");
+                    log::info!("⏰ Automatic scheduled self-update...");
                     match self.mls_group_handler.update_self() {
                         Ok((commit, welcome_option)) => {
-                            log::info!("✅ Self-update successful.");
+                            log::info!("✅ Automatic self-update successful.");
                             corosync::send_message(&self.corosync_handle, commit.as_slice())
                               .expect("Failed to send message through Corosync");
                             if let Some(welcome) = welcome_option {
