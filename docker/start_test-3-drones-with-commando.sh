@@ -11,8 +11,14 @@ cargo build
 docker-compose down
 docker-compose up -d
 docker cp $HOME/valkyrie-mls/target/debug/valkyrie-mls node2:/valkyrie-mls/valkyrie-mls
+docker cp $HOME/valkyrie-mls/src/config.toml node2:/valkyrie-mls/config.toml
+
+
 docker cp $HOME/valkyrie-mls/target/debug/valkyrie-mls node3:/valkyrie-mls/valkyrie-mls
+docker cp $HOME/valkyrie-mls/src/config.toml node3:/valkyrie-mls/config.toml
+
 docker cp $HOME/valkyrie-mls/target/debug/valkyrie-mls node4:/valkyrie-mls/valkyrie-mls
+docker cp $HOME/valkyrie-mls/src/config.toml node4:/valkyrie-mls/config.toml
 
 # Wait a moment to let containers start up
 sleep 2
