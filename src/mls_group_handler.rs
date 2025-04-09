@@ -80,9 +80,6 @@ impl MlsEngine {
             credential,
             )
             .expect("Error creating group");
-            
-
-        
         let update_interval_secs = config.update_interval_secs;
 
         MlsEngine {
@@ -155,6 +152,13 @@ impl MlsSwarmLogic for MlsEngine {
                 match processed_message.into_content() {
                     ProcessedMessageContent::ApplicationMessage(payload) => {
                         let content_bytes = payload.into_bytes();
+
+                                    // Log the decrypted message as UTF-8 if possible
+                        match std::str::from_utf8(&content_bytes) {
+                            Ok(text) => log::info!("Decrypted application message: {}", text),
+                            Err(_) => log::info!("Decrypted application message (non-UTF8): {:?}", content_bytes),
+                        }
+
                         Ok(content_bytes)
                     }
                     ProcessedMessageContent::ExternalJoinProposalMessage(_)
@@ -188,16 +192,10 @@ impl MlsSwarmLogic for MlsEngine {
         Ok(serialized_message)
     }
 
-    fn process_incoming_delivery_service_message(
-        &mut self,
-        mut buf: &[u8],
-    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
-        log::debug!("Processing incoming delivery service message. \n Group epoch before processing: {:?}", 
-            self.group.epoch()
-            );
+    fn process_incoming_delivery_service_message(&mut self, mut buf: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
+        log::debug!("Processing incoming delivery service message. \n Group epoch before processing: {:?}", self.group.epoch());
 
-        let message_in =
-            MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
+        let message_in= MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
         match message_in.extract() {
             MlsMessageBodyIn::PublicMessage(msg) => {
                 let processed_message = self
@@ -207,25 +205,17 @@ impl MlsSwarmLogic for MlsEngine {
                 match processed_message.into_content() {
                     ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
                         // TODO: Apply authentication for incoming commits.
-                        let _ = self
-                            .group
-                            .merge_staged_commit(&self.provider, *staged_commit)
-                            .context("Error handling staged commit.");
+                        let _ = self.group.merge_staged_commit(&self.provider, *staged_commit).context("Error handling staged commit.");
                     }
                     ProcessedMessageContent::ProposalMessage(proposal) => {
                         // TODO: Apply authentication for incoming proposals.
-                        let _ = self
-                            .group
-                            .store_pending_proposal(self.provider.storage(), *proposal.clone())
-                            .context("Error storing proposal.");
+                        let _ = self.group.store_pending_proposal(self.provider.storage(), *proposal.clone()).context("Error storing proposal.");
                     }
                     ProcessedMessageContent::ExternalJoinProposalMessage(_) => {
                         return Err(Error::msg("No support for External Joins."))
                     }
                     ProcessedMessageContent::ApplicationMessage(_) => {
-                        return Err(Error::msg(
-                            "Expected Handshake Message from DS. Received ApplicationMessage.",
-                        ))
+                        return Err(Error::msg("Expected Handshake Message from DS. Received ApplicationMessage.",))
                     }
                 }
                 Ok(None)
@@ -233,23 +223,18 @@ impl MlsSwarmLogic for MlsEngine {
 
             MlsMessageBodyIn::PrivateMessage(msg) => {
                 //let processed_message = self.group.process_message(&self.provider, msg).expect("Error processing message"); Panicked here, which stopped the program 
-                let processed_message = self
-                    .group
-                    .process_message(&self.provider, msg)
+                let processed_message = self.group.process_message(&self.provider, msg)
                     .map_err(|e| {
                         log::error!("Error processing message: {:?}", e);
                         Error::msg("Error processing message.")
                     })?;
-            
                 
                 match processed_message.into_content() {
                     ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
                         self.handle_incoming_commit(*staged_commit);
                     }
                     ProcessedMessageContent::ProposalMessage(proposal) => {
-                        let _ = self
-                            .group
-                            .store_pending_proposal(self.provider.storage(), *proposal.clone())
+                        let _ = self.group.store_pending_proposal(self.provider.storage(), *proposal.clone())
                             .context("Error storing proposal.");
                     }
                     ProcessedMessageContent::ExternalJoinProposalMessage(_) => {
@@ -299,7 +284,6 @@ impl MlsSwarmLogic for MlsEngine {
                 return;
             }
         };
-
     }
     
 
@@ -347,6 +331,14 @@ impl MlsSwarmLogic for MlsEngine {
         for (_key_ref, key_package) in self.pending_key_packages.iter() {
             key_packages.push(key_package.clone());
         }
+        
+        // Early return if there are no key packages to add
+        if key_packages.is_empty() {
+            // You could also return Ok with empty data if that fits your use case better
+            log::warn!("No key packages to add");
+            return Err(Error::msg("No key packages to add"));
+        }
+
         let (group_commit, welcome, _group_info) = self
             .group
             .add_members(&self.provider, &self.signature_key, &key_packages)?;
@@ -383,27 +375,29 @@ impl MlsSwarmLogic for MlsEngine {
             .expect("Error handling staged commit.");
     }
 
-    fn remove_member(
-        &mut self,
-        leaf_node: LeafNodeIndex,
-    ) -> (Vec<u8>, Option<Vec<u8>>) {
-        let (group_commit, welcome_option, _group_info) = self
+    fn remove_member(&mut self, leaf_node: LeafNodeIndex) -> (Vec<u8>, Option<Vec<u8>>) {
+        let (commit, welcome_option, _) = self
             .group
             .remove_members(&self.provider, &self.signature_key, &[leaf_node])
-            .expect("Error removing member");
-
-        // TODO: Fix error handling. This will panic if serialization fails.
-        let group_commit_out = group_commit
+            .expect("Failed to remove member from group");
+    
+        let commit_bytes = commit
             .tls_serialize_detached()
-            .expect("Error serializing group commit");
-        let welcome_out = welcome_option // Only process welcome if it is Some 
-            .map(|welcome| {
-                welcome
-                    .tls_serialize_detached()
-                    .expect("Error serializing welcome")
-            });
-        (group_commit_out, welcome_out)
+            .expect("Failed to serialize group commit");
+    
+        let welcome_bytes = welcome_option.map(|welcome| {
+            welcome
+                .tls_serialize_detached()
+                .expect("Failed to serialize Welcome message")
+        });
+    
+        self.group
+            .merge_pending_commit(&self.provider)
+            .expect("Failed to merge pending commit");
+    
+        (commit_bytes, welcome_bytes)
     }
+    
 
     fn update_self(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
         let pending = self.group.pending_commit();
@@ -448,10 +442,7 @@ impl MlsSwarmLogic for MlsEngine {
             .expect("Error serializing ratchet tree")
     }
 
-    fn add_new_member_from_bytes(
-        &mut self,
-        mut key_package_bytes: &[u8],
-    ) -> (Vec<u8>, Vec<u8>) {
+    fn add_new_member_from_bytes(&mut self, mut key_package_bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
         let message_in = MlsMessageIn::tls_deserialize(&mut key_package_bytes)
             .expect("Error deserializing message");
         let key_package_in = match message_in.extract() {

@@ -138,6 +138,22 @@ async fn main() -> Result<()> {
 
     env_logger::init();
     log::info!("MLS Control CLI started. Type commands or Ctrl-C to exit.");
+    log::info!(
+            "\nAvailable Commands:
+      b            → Broadcast KeyPackage
+      a            → Add Pending
+      r            → Retrieve Ratchet Tree
+      u            → Update
+      rm <index>   → Remove member at index
+      m <msg>      → Send application message
+      + <file>     → Add KeyPackage from file
+    
+    Example: 12 b          (broadcast to 10.10.0.12:8000)
+             4 rm 2        (remove member 2 from 10.10.0.4)
+             9 m Hello     (send app msg to 10.10.0.9)
+             7 + ./kp.bin  (add KeyPackage to 10.10.0.7)"
+        );
+    
 
     let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
     let stdin = BufReader::new(io::stdin());
@@ -171,25 +187,31 @@ async fn main() -> Result<()> {
 }
 
 async fn handle_input(input: &str, socket: &UdpSocket) -> Result<()> {
-    let mut parts = input.split_whitespace();
-    let ip = parts.next().ok_or_else(|| Error::msg("Missing IP address"))?;
-    let op = parts.next().ok_or_else(|| Error::msg("Missing command"))?;
+    let mut parts = input.trim().split_whitespace();
 
-    let command = match op {
-        "broadcast-keypackage" => Command::BroadcastKeyPackage,
-        "add-pending" => Command::AddPending,
-        "retrieve-ratchet-tree" => Command::RetrieveRatchetTree,
-        "update" => Command::Update,
-        "remove" => {
+    // Expect the first part to be the "x" in 10.10.0.x:8000
+    let ip_suffix = parts.next().ok_or_else(|| Error::msg("Missing node ID (x in 10.10.0.x)"))?;
+    let ip: String = format!("10.10.0.{ip_suffix}:8000");
+
+    // Expect the next part to be the command letter
+    let cmd = parts.next().ok_or_else(|| Error::msg("Missing command"))?;
+
+    // Parse the rest of the command based on the letter
+    let command = match cmd {
+        "b" => Command::BroadcastKeyPackage,
+        "a" => Command::AddPending,
+        "r" => Command::RetrieveRatchetTree,
+        "u" => Command::Update,
+        "rm" => {
             let index = parts.next().ok_or_else(|| Error::msg("Missing index for remove"))?;
             let index = index.parse::<u32>()?;
             Command::Remove { index }
         }
-        "application-msg" => {
+        "m" => {
             let data = parts.collect::<Vec<_>>().join(" ");
             Command::ApplicationMsg { data: data.into_bytes() }
         }
-        "add" => {
+        "+" => {
             let file_path = parts.next().ok_or_else(|| Error::msg("Missing file path for add"))?;
             let key_package_bytes = tokio::fs::read(file_path).await?;
             Command::Add { key_package_bytes }
@@ -197,9 +219,10 @@ async fn handle_input(input: &str, socket: &UdpSocket) -> Result<()> {
         _ => return Err(Error::msg("Unknown command")),
     };
 
+    // Serialize and send the command
     let buf = serialize_command(&command);
-    socket.send_to(&buf, ip).await?;
-    log::info!("✅ Sent {op} to {ip}");
-
+    socket.send_to(&buf, &ip).await?;
+    log::info!("✅ Sent command '{:?}' to {ip}", command);
     Ok(())
 }
+
