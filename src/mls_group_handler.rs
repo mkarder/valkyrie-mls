@@ -80,9 +80,6 @@ impl MlsEngine {
             credential,
             )
             .expect("Error creating group");
-            
-
-        
         let update_interval_secs = config.update_interval_secs;
 
         MlsEngine {
@@ -155,6 +152,13 @@ impl MlsSwarmLogic for MlsEngine {
                 match processed_message.into_content() {
                     ProcessedMessageContent::ApplicationMessage(payload) => {
                         let content_bytes = payload.into_bytes();
+
+                                    // Log the decrypted message as UTF-8 if possible
+                        match std::str::from_utf8(&content_bytes) {
+                            Ok(text) => log::info!("Decrypted application message: {}", text),
+                            Err(_) => log::info!("Decrypted application message (non-UTF8): {:?}", content_bytes),
+                        }
+
                         Ok(content_bytes)
                     }
                     ProcessedMessageContent::ExternalJoinProposalMessage(_)
