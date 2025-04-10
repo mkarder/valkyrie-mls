@@ -18,7 +18,7 @@ async fn main() -> Result<()>{
     
     #[cfg(target_os = "linux")] {
         log::info!("Starting MLS Valkyrie...");
-        let config = Config::from_file("./config.toml").unwrap();
+        let config = Config::from_file("~/valkyrie-mls/src/config.toml").unwrap();
 
         let mls_engine = MlsEngine::new(config.mls.clone());
 
