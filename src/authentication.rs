@@ -1,4 +1,3 @@
-use anyhow::Ok;
 /*
 [Operational requirements]
 According to the operational requirements described in Section 7 of:
@@ -85,31 +84,32 @@ to each drone—used to validate presented identifiers.
 [Credential Expiry and Revocation]
 Not covered in our implementation.
 */
-use openmls::prelude::*;
+use anyhow::Error;
+use openmls::{credentials::errors, prelude::*};
+use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct X509Credential {
-    credential_type: CredentialType,
-    serialized_credential_content: VLBytes,
+    certificate: VLBytes,
 }
 
 impl X509Credential {
-    pub fn new(serialized_credential_content: VLBytes) -> Self {
-        let credential_type = CredentialType::X509;
+    pub fn new(serialized_credential_content: Vec<u8>) -> Self {
         Self {
-            credential_type,
-            serialized_credential_content,
+            certificate: serialized_credential_content.into(),
         }
+    }
+
+    pub fn certificate(&self) -> &[u8] {
+        self.certificate.as_slice()
     }
 
     pub fn validate(&self) -> bool {
         // Validate the X.509 certificate
-        // This is a placeholder for the actual validation logic
-        // In a real implementation, you would check the certificate against a list of trusted CAs
         true
     }
 
-    pub fn from_der(der: &[u8]) -> Result<Self, openssl::error::ErrorStack> {
-        // Placeholder for creating X509Credential from DER-encoded certificate.
+    pub fn from_der(der: &[u8]) -> Result<Self, Error> {
         // Convert DER-encoded certificate to X509Credential
         let cert = openssl::x509::X509::from_der(der)?;
         let serialized_credential_content = cert.to_der()?;
@@ -117,19 +117,104 @@ impl X509Credential {
     }
 }
 
+impl From<X509Credential> for Credential {
+    fn from(credential: X509Credential) -> Self {
+        Credential::new(CredentialType::X509, credential.certificate().to_vec())
+    }
+}
+
+impl TryFrom<Credential> for X509Credential {
+    type Error = CredentialError;
+
+    fn try_from(credential: Credential) -> Result<Self, Self::Error> {
+        match credential.credential_type() {
+            CredentialType::X509 => Ok(X509Credential::new(
+                credential.serialized_content().to_vec(),
+            )),
+            _ => Err(errors::CredentialError::UnsupportedCredentialType),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ed25519credential {
+    serialized_credential_content: VLBytes,
+}
+impl Ed25519credential {
+    pub fn new(serialized_credential_content: Vec<u8>) -> Self {
+        Self {
+            serialized_credential_content: serialized_credential_content.into(),
+        }
+    }
+
+    pub fn serialized_contents(&self) -> &[u8] {
+        self.serialized_credential_content.as_slice()
+    }
+
+    pub fn validate(&self) -> bool {
+        // Validate the Ed25519 signature
+        // This is a placeholder for the actual validation logic
+        // In a real implementation, you would check the signature against a list of trusted CAs
+        true
+    }
+
+    pub fn from_der(der: &[u8]) {
+        // Placeholder for creating ed25519Credential from DER-encoded certificate.
+        // Convert DER-encoded certificate to ed25519Credential
+        let key = openssl::pkey::PKey::private_key_from_der(der);
+        // Ok(ed25519Credential::new(key.bits().to_le_bytes())
+    }
+}
+
+impl From<Ed25519credential> for Credential {
+    fn from(credential: Ed25519credential) -> Self {
+        Credential::new(
+            CredentialType::Other(0xF000),
+            credential.serialized_contents().to_vec(),
+        )
+    }
+}
+
+impl TryFrom<Credential> for Ed25519credential {
+    type Error = CredentialError;
+
+    fn try_from(credential: Credential) -> Result<Self, Self::Error> {
+        match credential.credential_type() {
+            CredentialType::Other(0xF000) => Ok(Ed25519credential::new(
+                credential.serialized_content().to_vec(),
+            )),
+            _ => Err(errors::CredentialError::UnsupportedCredentialType),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openssl::x509::X509;
+    use openssl::pkey::PKey; // Note: libssl-dev package is required for openssl.
     use std::fs;
 
     #[test]
     fn test_x509_credential() {
         // Load a sample X.509 certificate from a file
-        let cert_data = fs::read("path/to/certificate.der").unwrap();
+        let cert_data = fs::read("authentication/certificates/rootCA.der").unwrap();
         let credential = X509Credential::from_der(&cert_data).unwrap();
 
         // Validate the credential
         assert!(credential.validate());
+    }
+
+    #[test]
+    fn test_parse_ed25519() {
+        let key_bytes = fs::read("authentication/keys/testPrivCa2.key").unwrap();
+        println!("Key bytes: {:?}", key_bytes);
+        println!("Key bytes length: {:?}", key_bytes.len());
+        match PKey::private_key_from_der(&key_bytes) {
+            Ok(key) => println!("Parsed key: {:?}", key),
+            Err(e) => println!("Error parsing key: {:?}", e),
+        }
+        // let key = SigningKey::try_from(key_bytes.as_slice())
+        //     .expect("Error converting keys from key bytes.");
+        // println!("Parsed key: {:?}", key);
     }
 }
