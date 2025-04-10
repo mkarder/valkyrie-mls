@@ -9,4 +9,6 @@ echo "$NODE_IP $NODE_NAME" >> /etc/hosts
 echo "Starting Corosync..."
 corosync -f &  # Start in background (-f = foreground, but we push it to background here)
 
+cd /root/valkyrie-mls
+
 exec "$@"  # This allows the script to pass additional arguments (like `bash`)
