@@ -1,7 +1,7 @@
 # ---------------------------------------------------------
 # Stage 1: Build the Rust application
 # ---------------------------------------------------------
-FROM ubuntu:latest AS builder
+FROM ubuntu:18.04 AS builder
 
 # Set environment variables for non-interactive installations
 ENV DEBIAN_FRONTEND=noninteractive
@@ -39,7 +39,7 @@ RUN cargo build
 # ---------------------------------------------------------
 # Stage 2: Final runtime environment
 # ---------------------------------------------------------
-FROM ubuntu:latest
+FROM ubuntu:18.04
 
 # Set environment variables for non-interactive installations
 ENV DEBIAN_FRONTEND=noninteractive
