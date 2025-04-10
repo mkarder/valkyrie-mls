@@ -64,7 +64,7 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean
 
 # Corosync setup
-COPY docker/corosync.conf /etc/corosync/corosync.conf.template
+COPY ./corosync.conf /etc/corosync/corosync.conf.template
 
 # Copy config files 
 COPY src/config.toml valkyrie-mls/config.toml
