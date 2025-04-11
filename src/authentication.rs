@@ -85,8 +85,12 @@ to each drone—used to validate presented identifiers.
 Not covered in our implementation.
 */
 use anyhow::Error;
-use openmls::{credentials::errors, prelude::*};
+use ed25519_dalek::{Signature, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{KEYPAIR_LENGTH, PUBLIC_KEY_LENGTH, SECRET_KEY_LENGTH, SIGNATURE_LENGTH};
+use openmls::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct X509Credential {
@@ -131,7 +135,7 @@ impl TryFrom<Credential> for X509Credential {
             CredentialType::X509 => Ok(X509Credential::new(
                 credential.serialized_content().to_vec(),
             )),
-            _ => Err(errors::CredentialError::UnsupportedCredentialType),
+            _ => Err(CredentialError::UnsupportedCredentialType),
         }
     }
 }
@@ -151,18 +155,50 @@ impl Ed25519credential {
         self.serialized_credential_content.as_slice()
     }
 
-    pub fn validate(&self) -> bool {
-        // Validate the Ed25519 signature
-        // This is a placeholder for the actual validation logic
-        // In a real implementation, you would check the signature against a list of trusted CAs
-        true
-    }
+    pub fn validate(
+        &self,
+        expected_signature_key: &SignaturePublicKey,
+        trusted_issuers: &HashMap<Vec<u8>, VerifyingKey>,
+    ) -> Result<(), CredentialError> {
+        let data: Ed25519CredentialData = bincode::deserialize(self.serialized_contents())
+            .map_err(|_| CredentialError::DecodingError)?;
 
-    pub fn from_der(der: &[u8]) {
-        // Placeholder for creating ed25519Credential from DER-encoded certificate.
-        // Convert DER-encoded certificate to ed25519Credential
-        let key = openssl::pkey::PKey::private_key_from_der(der);
-        // Ok(ed25519Credential::new(key.bits().to_le_bytes())
+        // Step 1: Check public key matches what's in the CredentialWithKey
+        if data.signature_key_bytes != expected_signature_key.as_slice() {
+            return Err(CredentialError::InvalidSignatureKey);
+        }
+
+        // Step 2: Rebuild the signed message
+        let mut message = Vec::new();
+        message.extend_from_slice(&data.identity);
+        message.extend_from_slice(&data.signature_key_bytes);
+        message.extend_from_slice(&data.not_after.to_le_bytes());
+
+        // Step 3: Verify the signature with the root CA key
+        let verifying_key = trusted_issuers
+            .get(&data.issuer)
+            .ok_or(CredentialError::UnknownIssuer)?;
+
+        // Step 4: Verify the signature
+        let signature = Signature::try_from(&data.signature_bytes[..])
+            .map_err(|_| CredentialError::InvalidSignature)?;
+
+        match verifying_key.verify(&message, &signature) {
+            Ok(_) => {}
+            Err(_) => return Err(CredentialError::InvalidSignature), // Consider using the `SignatureError`` propogated from ed25519_dalek (ed25519::signature::Error)
+        }
+
+        // Step 5: Check expiration
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| CredentialError::ClockError)?
+            .as_secs();
+
+        if now > data.not_after {
+            return Err(CredentialError::Expired);
+        }
+
+        Ok(())
     }
 }
 
@@ -183,19 +219,39 @@ impl TryFrom<Credential> for Ed25519credential {
             CredentialType::Other(0xF000) => Ok(Ed25519credential::new(
                 credential.serialized_content().to_vec(),
             )),
-            _ => Err(errors::CredentialError::UnsupportedCredentialType),
+            _ => Err(CredentialError::UnsupportedCredentialType),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ed25519CredentialData {
+    pub identity: Vec<u8>,
+    pub signature_key_bytes: Vec<u8>, // signature_key_bytes:  [u8; KEYPAIR_LENGTH] = keypair.to_bytes();
+    pub signature_bytes: Vec<u8>, // signature_bytes:  [u8; SIGNATURE_LENGTH]  = signature.to_bytes();
+    pub issuer: Vec<u8>, // Root CA or authority ID. Should corresponds to name of the keyfile in /autentication/keys/ used to sign the credential.
+    pub not_after: u64,  // UNIX timestamp
+}
+
+#[derive(Debug)]
+pub enum CredentialError {
+    InvalidSignature,
+    InvalidSignatureKey,
+    UnknownIssuer,
+    Expired,
+    DecodingError,
+    ClockError,
+    UnsupportedCredentialType,
+    VerifyingError,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openssl::pkey::PKey; // Note: libssl-dev package is required for openssl.
     use std::fs;
 
     #[test]
-    fn test_x509_credential() {
+    fn load_x509_credential_from_file() {
         // Load a sample X.509 certificate from a file
         let cert_data = fs::read("authentication/certificates/rootCA.der").unwrap();
         let credential = X509Credential::from_der(&cert_data).unwrap();
@@ -205,16 +261,17 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_ed25519() {
-        let key_bytes = fs::read("authentication/keys/testPrivCa2.key").unwrap();
-        println!("Key bytes: {:?}", key_bytes);
-        println!("Key bytes length: {:?}", key_bytes.len());
-        match PKey::private_key_from_der(&key_bytes) {
-            Ok(key) => println!("Parsed key: {:?}", key),
-            Err(e) => println!("Error parsing key: {:?}", e),
-        }
-        // let key = SigningKey::try_from(key_bytes.as_slice())
-        //     .expect("Error converting keys from key bytes.");
-        // println!("Parsed key: {:?}", key);
-    }
+    fn load_ed25519_credential_from_file() {}
+
+    #[test]
+    fn valid_ed25519_signature() {}
+
+    #[test]
+    fn invalid_ed25519_signature() {}
+
+    #[test]
+    fn expired_ed25519_credential() {}
+
+    #[test]
+    fn unknown_issuer() {}
 }
