@@ -85,11 +85,11 @@ to each drone—used to validate presented identifiers.
 Not covered in our implementation.
 */
 use anyhow::Error;
+use ed25519_dalek::ed25519::signature::SignerMut;
 use ed25519_dalek::{Signature, SigningKey, Verifier, VerifyingKey};
 use ed25519_dalek::{KEYPAIR_LENGTH, PUBLIC_KEY_LENGTH, SECRET_KEY_LENGTH, SIGNATURE_LENGTH};
 use openmls::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Possible constants and/or config values for the AS
@@ -97,7 +97,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // 2. A list of trusted issuers (root CAs) for the AS to validate credentials against. The name of the issuer should correspond to the name of its keyfile in the authentication directory.
 // -> e.g. issuer "root-ca" should have a keyfile "root-ca.pub" in the authentication directory.
 const AUTHENTICATION_DIR: &str = "authentication";
-const ISSUERS: [&str; 1] = ["test-ca"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct X509Credential {
@@ -169,19 +168,19 @@ impl Ed25519credential {
         let data: Ed25519CredentialData = bincode::deserialize(self.serialized_contents())
             .map_err(|_| CredentialError::DecodingError)?;
 
-        if data.signature_key_bytes != expected_signature_key.as_slice() {
+        if data.credential_key_bytes != expected_signature_key.as_slice() {
             return Err(CredentialError::InvalidSignatureKey);
         }
 
         let message = [
             &data.identity[..],
-            &data.signature_key_bytes[..],
+            &data.credential_key_bytes[..],
             &data.not_after.to_le_bytes()[..],
         ]
         .concat();
 
-        let verifying_key =
-            load_trusted_issuer(data.issuer.clone()).map_err(|_| CredentialError::UnknownIssuer)?;
+        let verifying_key = load_verifying_key_from_issuer(data.issuer.clone())
+            .map_err(|_| CredentialError::UnknownIssuer)?;
 
         let signature = Signature::try_from(&data.signature_bytes[..])
             .map_err(|_| CredentialError::InvalidSignature)?;
@@ -202,7 +201,7 @@ impl Ed25519credential {
         Ok(())
     }
 
-    pub fn from_file(&self, path: &str) -> Result<Self, CredentialError> {
+    pub fn from_file(path: &str) -> Result<Self, CredentialError> {
         // Load the Ed25519 credential from a file
         let bytes = std::fs::read(path).map_err(|_| CredentialError::DecodingError)?;
         Ok(Ed25519credential::new(bytes))
@@ -232,13 +231,23 @@ impl TryFrom<Credential> for Ed25519credential {
     }
 }
 
+impl TryFrom<Ed25519CredentialData> for Ed25519credential {
+    type Error = CredentialError;
+
+    fn try_from(credential: Ed25519CredentialData) -> Result<Self, Self::Error> {
+        let serialized_credential_content =
+            bincode::serialize(&credential).map_err(|_| CredentialError::DecodingError)?;
+        Ok(Ed25519credential::new(serialized_credential_content))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ed25519CredentialData {
     pub identity: Vec<u8>,
-    pub signature_key_bytes: Vec<u8>, // signature_key_bytes:  [u8; KEYPAIR_LENGTH] = keypair.to_bytes();
+    pub credential_key_bytes: Vec<u8>, // credential_key_bytes:  [u8; KEYPAIR_LENGTH] = keypair.to_bytes();
+    pub not_after: u64,                // UNIX timestamp
     pub signature_bytes: Vec<u8>, // signature_bytes:  [u8; SIGNATURE_LENGTH]  = signature.to_bytes();
     pub issuer: Vec<u8>, // Root CA or authority ID. Should corresponds to name of the keyfile in /autentication/keys/ used to sign the credential.
-    pub not_after: u64,  // UNIX timestamp
 }
 
 #[derive(Debug)]
@@ -254,48 +263,95 @@ pub enum CredentialError {
     IssuerEncodingError,
 }
 
-fn load_trusted_issuer(issuer_bytes: Vec<u8>) -> Result<VerifyingKey, CredentialError> {
+fn load_verifying_key_from_issuer(issuer_bytes: Vec<u8>) -> Result<VerifyingKey, CredentialError> {
     // Load trusted issuer from the authentication directory
     let issuer_string =
         String::from_utf8(issuer_bytes).map_err(|_| CredentialError::IssuerEncodingError)?;
 
     let issuer_path = format!("{}/keys/{}.pub", AUTHENTICATION_DIR, issuer_string);
     if std::path::Path::new(&issuer_path).exists() {
-        let pubkey_bytes = std::fs::read(&issuer_path).unwrap();
-        Ok(VerifyingKey::from_bytes(pubkey_bytes.as_slice().try_into().unwrap()).unwrap())
+        let data = std::fs::read(&issuer_path).unwrap();
+        // Simple manual extraction: assume 12-byte ASN.1 header
+        let key_bytes = &data[data.len() - 32..];
+        let pub_key_bytes: &[u8; 32] = key_bytes
+            .try_into()
+            .map_err(|_| CredentialError::VerifyingError)?;
+
+        let pub_key = VerifyingKey::from_bytes(pub_key_bytes);
+        Ok(pub_key.unwrap())
     } else {
         log::error!("Issuer key file not found: {}", issuer_path);
         Err(CredentialError::UnknownIssuer)
     }
 }
 
-fn load_trusted_issuers() -> HashMap<Vec<u8>, VerifyingKey> {
-    // Load trusted issuers from the authentication directory
-    // Panicks if no trusted issuers are found.
-    let mut map = HashMap::new();
+fn load_signing_key_from_issuer(issuer_bytes: Vec<u8>) -> Result<SigningKey, CredentialError> {
+    // Load trusted issuer from the authentication directory
+    let issuer_string =
+        String::from_utf8(issuer_bytes).map_err(|_| CredentialError::IssuerEncodingError)?;
 
-    for issuer in ISSUERS.iter() {
-        let issuer_path = format!("{}/keys/{}.pub", AUTHENTICATION_DIR, issuer);
-        if std::path::Path::new(&issuer_path).exists() {
-            let pubkey_bytes = std::fs::read(&issuer_path).unwrap();
-            let verifying_key =
-                VerifyingKey::from_bytes(pubkey_bytes.as_slice().try_into().unwrap()).unwrap();
-            map.insert(issuer.as_bytes().to_vec(), verifying_key);
-        } else {
-            log::error!("Issuer key file not found: {}", issuer_path);
-        }
-    }
-    if map.is_empty() {
-        log::error!("No trusted issuers found in the authentication directory.");
-        panic!("No trusted issuers found in the authentication directory.");
-    }
+    let issuer_path = format!("{}/keys/{}.priv", AUTHENTICATION_DIR, issuer_string);
+    if std::path::Path::new(&issuer_path).exists() {
+        let data = std::fs::read(&issuer_path).unwrap();
+        // Simple manual extraction: assume 12-byte ASN.1 header
+        let key_bytes = &data[data.len() - 32..];
+        let priv_key_bytes: &[u8; 32] = key_bytes
+            .try_into()
+            .map_err(|_| CredentialError::VerifyingError)?;
 
-    map
+        let priv_key = SigningKey::from_bytes(priv_key_bytes);
+        Ok(priv_key)
+    } else {
+        log::error!("Issuer key file not found: {}", issuer_path);
+        Err(CredentialError::UnknownIssuer)
+    }
+}
+
+fn generate_signed_ed25519_credential(
+    identity: &str,
+    credential_key_bytes: Vec<u8>, // The public key to be attested.
+    issuer: &str,
+    not_after: u64,
+    store: bool,
+) -> Result<Ed25519credential, CredentialError> {
+    let message = [
+        &identity.as_bytes()[..],
+        &credential_key_bytes[..],
+        &not_after.to_le_bytes()[..],
+    ]
+    .concat();
+
+    let mut signature_key = load_signing_key_from_issuer(issuer.as_bytes().to_vec())
+        .map_err(|_| CredentialError::UnknownIssuer)?;
+    let signature = signature_key.sign(&message);
+
+    let credential_data = Ed25519CredentialData {
+        identity: identity.as_bytes().to_vec(),
+        credential_key_bytes,
+        signature_bytes: signature.to_bytes().to_vec(),
+        issuer: issuer.as_bytes().to_vec(),
+        not_after,
+    };
+
+    let credential = Ed25519credential::try_from(credential_data.clone());
+
+    if store {
+        // Store the credential in a file
+        let credential_path = format!("{}/credentials/{}.cred", AUTHENTICATION_DIR, identity);
+        std::fs::write(
+            credential_path,
+            bincode::serialize(&credential_data.clone()).unwrap(),
+        )
+        .map_err(|_| CredentialError::DecodingError)?;
+    }
+    credential
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use openmls_basic_credential::SignatureKeyPair;
+
+    use super::{generate_signed_ed25519_credential, *};
     use std::fs;
 
     #[test]
@@ -306,6 +362,53 @@ mod tests {
 
         // Validate the credential
         assert!(credential.validate());
+    }
+
+    #[test]
+    fn test_load_ed25519_keys() {
+        let issuer = "test-ca";
+        load_verifying_key_from_issuer(issuer.as_bytes().to_vec())
+            .expect("Error loading verifying key from test issuer.");
+        load_signing_key_from_issuer(issuer.as_bytes().to_vec())
+            .expect("Error loading signing key from test issuer.");
+    }
+
+    #[test]
+    fn test_generate_signed_ed25519_credential() {
+        let signature_algorithm =
+            Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519.signature_algorithm();
+
+        let identity = "test-identity";
+        let credential_key = SignatureKeyPair::new(signature_algorithm)
+            .expect("Error generating a signature key pair.");
+
+        let issuer = "root-ca";
+        let not_after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600; // 1 hour from now
+        let store = true;
+        let credential = generate_signed_ed25519_credential(
+            identity,
+            credential_key.public().to_vec(),
+            issuer,
+            not_after,
+            store,
+        )
+        .unwrap();
+
+        // Assert credential was stored correctly
+        let credential_path = format!("{}/credentials/{}.cred", AUTHENTICATION_DIR, identity);
+        assert!(std::path::Path::new(&credential_path).exists());
+
+        // Load the credential from the file
+        let loaded_credential = Ed25519credential::from_file(&credential_path).unwrap();
+        assert_eq!(
+            loaded_credential.serialized_contents(),
+            credential.serialized_contents()
+        );
+        // Clean up the test file
     }
 
     #[test]
