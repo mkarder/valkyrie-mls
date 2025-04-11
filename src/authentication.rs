@@ -92,6 +92,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Possible constants and/or config values for the AS
+// 1. Authentication directory here keys, certs, etc. can be found.
+// 2. A list of trusted issuers (root CAs) for the AS to validate credentials against. The name of the issuer should correspond to the name of its keyfile in the authentication directory.
+// -> e.g. issuer "root-ca" should have a keyfile "root-ca.pub" in the authentication directory.
+const AUTHENTICATION_DIR: &str = "authentication";
+const ISSUERS: [&str; 1] = ["test-ca"];
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct X509Credential {
     certificate: VLBytes,
@@ -158,37 +165,31 @@ impl Ed25519credential {
     pub fn validate(
         &self,
         expected_signature_key: &SignaturePublicKey,
-        trusted_issuers: &HashMap<Vec<u8>, VerifyingKey>,
     ) -> Result<(), CredentialError> {
         let data: Ed25519CredentialData = bincode::deserialize(self.serialized_contents())
             .map_err(|_| CredentialError::DecodingError)?;
 
-        // Step 1: Check public key matches what's in the CredentialWithKey
         if data.signature_key_bytes != expected_signature_key.as_slice() {
             return Err(CredentialError::InvalidSignatureKey);
         }
 
-        // Step 2: Rebuild the signed message
-        let mut message = Vec::new();
-        message.extend_from_slice(&data.identity);
-        message.extend_from_slice(&data.signature_key_bytes);
-        message.extend_from_slice(&data.not_after.to_le_bytes());
+        let message = [
+            &data.identity[..],
+            &data.signature_key_bytes[..],
+            &data.not_after.to_le_bytes()[..],
+        ]
+        .concat();
 
-        // Step 3: Verify the signature with the root CA key
-        let verifying_key = trusted_issuers
-            .get(&data.issuer)
-            .ok_or(CredentialError::UnknownIssuer)?;
+        let verifying_key =
+            load_trusted_issuer(data.issuer.clone()).map_err(|_| CredentialError::UnknownIssuer)?;
 
-        // Step 4: Verify the signature
         let signature = Signature::try_from(&data.signature_bytes[..])
             .map_err(|_| CredentialError::InvalidSignature)?;
 
-        match verifying_key.verify(&message, &signature) {
-            Ok(_) => {}
-            Err(_) => return Err(CredentialError::InvalidSignature), // Consider using the `SignatureError`` propogated from ed25519_dalek (ed25519::signature::Error)
-        }
+        verifying_key
+            .verify(&message, &signature)
+            .map_err(|_| CredentialError::InvalidSignature)?;
 
-        // Step 5: Check expiration
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| CredentialError::ClockError)?
@@ -199,6 +200,13 @@ impl Ed25519credential {
         }
 
         Ok(())
+    }
+
+    pub fn from_file(&self, path: &str) -> Result<Self, CredentialError> {
+        // Load the Ed25519 credential from a file
+        let bytes = std::fs::read(path).map_err(|_| CredentialError::DecodingError)?;
+        Ok(Ed25519credential::new(bytes))
+        // let credential = bincode::deserialize(&data)?;
     }
 }
 
@@ -243,6 +251,46 @@ pub enum CredentialError {
     ClockError,
     UnsupportedCredentialType,
     VerifyingError,
+    IssuerEncodingError,
+}
+
+fn load_trusted_issuer(issuer_bytes: Vec<u8>) -> Result<VerifyingKey, CredentialError> {
+    // Load trusted issuer from the authentication directory
+    let issuer_string =
+        String::from_utf8(issuer_bytes).map_err(|_| CredentialError::IssuerEncodingError)?;
+
+    let issuer_path = format!("{}/keys/{}.pub", AUTHENTICATION_DIR, issuer_string);
+    if std::path::Path::new(&issuer_path).exists() {
+        let pubkey_bytes = std::fs::read(&issuer_path).unwrap();
+        Ok(VerifyingKey::from_bytes(pubkey_bytes.as_slice().try_into().unwrap()).unwrap())
+    } else {
+        log::error!("Issuer key file not found: {}", issuer_path);
+        Err(CredentialError::UnknownIssuer)
+    }
+}
+
+fn load_trusted_issuers() -> HashMap<Vec<u8>, VerifyingKey> {
+    // Load trusted issuers from the authentication directory
+    // Panicks if no trusted issuers are found.
+    let mut map = HashMap::new();
+
+    for issuer in ISSUERS.iter() {
+        let issuer_path = format!("{}/keys/{}.pub", AUTHENTICATION_DIR, issuer);
+        if std::path::Path::new(&issuer_path).exists() {
+            let pubkey_bytes = std::fs::read(&issuer_path).unwrap();
+            let verifying_key =
+                VerifyingKey::from_bytes(pubkey_bytes.as_slice().try_into().unwrap()).unwrap();
+            map.insert(issuer.as_bytes().to_vec(), verifying_key);
+        } else {
+            log::error!("Issuer key file not found: {}", issuer_path);
+        }
+    }
+    if map.is_empty() {
+        log::error!("No trusted issuers found in the authentication directory.");
+        panic!("No trusted issuers found in the authentication directory.");
+    }
+
+    map
 }
 
 #[cfg(test)]
