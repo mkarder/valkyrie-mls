@@ -340,11 +340,21 @@ fn generate_signed_ed25519_credential(
         let credential_path = format!("{}/credentials/{}.cred", AUTHENTICATION_DIR, identity);
         std::fs::write(
             credential_path,
-            bincode::serialize(&credential_data.clone()).unwrap(),
+            bincode::serialize(&credential_data).expect("Serialization failed"),
         )
         .map_err(|_| CredentialError::DecodingError)?;
     }
     credential
+}
+
+fn generate_credential_with_key(
+    ed25519_credential: Ed25519credential,
+    signature_key: SignaturePublicKey,
+) -> CredentialWithKey {
+    CredentialWithKey {
+        credential: ed25519_credential.into(),
+        signature_key,
+    }
 }
 
 #[cfg(test)]
@@ -353,6 +363,48 @@ mod tests {
 
     use super::{generate_signed_ed25519_credential, *};
     use std::fs;
+
+    fn gen_test_ed25519_credential_data() -> Ed25519CredentialData {
+        let signature_algorithm =
+            Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519.signature_algorithm();
+
+        let identity = "test-identity";
+        let credential_key = SignatureKeyPair::new(signature_algorithm)
+            .expect("Error generating a signature key pair.");
+
+        let credential_key_bytes = credential_key.public().to_vec(); // Should be 32 bytes
+        let issuer = b"test-ca".to_vec();
+        let not_after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+
+        let message = [
+            &identity.as_bytes()[..],
+            &credential_key_bytes[..],
+            &not_after.to_le_bytes()[..],
+        ]
+        .concat();
+
+        let signature = load_signing_key_from_issuer(issuer.clone())
+            .unwrap()
+            .sign(&message);
+        let signature_bytes = signature.to_bytes().to_vec();
+
+        Ed25519CredentialData {
+            identity: identity.as_bytes().to_vec(),
+            credential_key_bytes,
+            signature_bytes,
+            issuer,
+            not_after,
+        }
+    }
+
+    fn gen_test_ed25519_credential() -> Ed25519credential {
+        let credential_data = gen_test_ed25519_credential_data();
+        Ed25519credential::try_from(credential_data).expect("Failed to create Ed25519 credential")
+    }
 
     #[test]
     fn load_x509_credential_from_file() {
@@ -374,6 +426,22 @@ mod tests {
     }
 
     #[test]
+    fn test_ed25519_credentialdata_bincode_roundtrip() {
+        // Generate a test Ed25519CredentialData
+        let original = gen_test_ed25519_credential_data();
+
+        // Serialize
+        let serialized = bincode::serialize(&original).expect("Serialization failed");
+
+        // Deserialize
+        let deserialized: Ed25519CredentialData =
+            bincode::deserialize(&serialized).expect("Deserialization failed");
+
+        // Check equality
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
     fn test_generate_signed_ed25519_credential() {
         let signature_algorithm =
             Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519.signature_algorithm();
@@ -382,22 +450,23 @@ mod tests {
         let credential_key = SignatureKeyPair::new(signature_algorithm)
             .expect("Error generating a signature key pair.");
 
-        let issuer = "root-ca";
+        let issuer = "test-ca";
         let not_after = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs()
             + 3600; // 1 hour from now
         let store = true;
-        let credential = generate_signed_ed25519_credential(
+        let credential_result = generate_signed_ed25519_credential(
             identity,
             credential_key.public().to_vec(),
             issuer,
             not_after,
             store,
-        )
-        .unwrap();
+        );
 
+        assert!(credential_result.is_ok(), "{:?}", credential_result);
+        let credential = credential_result.unwrap();
         // Assert credential was stored correctly
         let credential_path = format!("{}/credentials/{}.cred", AUTHENTICATION_DIR, identity);
         assert!(std::path::Path::new(&credential_path).exists());
@@ -408,11 +477,18 @@ mod tests {
             loaded_credential.serialized_contents(),
             credential.serialized_contents()
         );
-        // Clean up the test file
-    }
 
-    #[test]
-    fn load_ed25519_credential_from_file() {}
+        // Validate the credential
+        let signature_pub_key = SignaturePublicKey::from(credential_key.public().to_vec());
+        credential
+            .validate(&signature_pub_key)
+            .expect("Credential validation failed");
+
+        // Invalid signature
+
+        // Clean up the test file
+        std::fs::remove_file(&credential_path).expect("Failed to delete test credential file");
+    }
 
     #[test]
     fn valid_ed25519_signature() {}

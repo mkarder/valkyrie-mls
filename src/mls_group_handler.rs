@@ -22,14 +22,10 @@ pub struct MlsEngine {
 
 pub trait MlsSwarmLogic {
     fn add_new_member(&mut self, key_package: KeyPackage) -> (Vec<u8>, Vec<u8>);
-    fn add_new_member_from_bytes(
-        &mut self,
-        key_package_bytes: &[u8],
-    ) -> (Vec<u8>, Vec<u8>);
+    fn add_new_member_from_bytes(&mut self, key_package_bytes: &[u8]) -> (Vec<u8>, Vec<u8>);
     fn add_pending_key_packages(&mut self) -> Result<(Vec<u8>, Vec<u8>), Error>;
 
-    fn remove_member(&mut self, leaf_node: LeafNodeIndex)
-        -> (Vec<u8>, Option<Vec<u8>>);
+    fn remove_member(&mut self, leaf_node: LeafNodeIndex) -> (Vec<u8>, Option<Vec<u8>>);
 
     fn update_self(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error>;
 
@@ -78,11 +74,9 @@ impl MlsEngine {
             &signature_key,
             &generate_group_create_config(),
             credential,
-            )
-            .expect("Error creating group");
-            
+        )
+        .expect("Error creating group");
 
-        
         let update_interval_secs = config.update_interval_secs;
 
         MlsEngine {
@@ -145,13 +139,13 @@ impl MlsSwarmLogic for MlsEngine {
                 }
             }
             MlsMessageBodyIn::PrivateMessage(msg) => {
-                let processed_message = self
-                    .group
-                    .process_message(&self.provider, msg)
-                    .map_err(|e| {
-                        log::error!("Error processing message: {:?}", e);
-                        Error::msg("Error processing message.")
-                    })?;
+                let processed_message =
+                    self.group
+                        .process_message(&self.provider, msg)
+                        .map_err(|e| {
+                            log::error!("Error processing message: {:?}", e);
+                            Error::msg("Error processing message.")
+                        })?;
                 match processed_message.into_content() {
                     ProcessedMessageContent::ApplicationMessage(payload) => {
                         let content_bytes = payload.into_bytes();
@@ -192,9 +186,10 @@ impl MlsSwarmLogic for MlsEngine {
         &mut self,
         mut buf: &[u8],
     ) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
-        log::debug!("Processing incoming delivery service message. \n Group epoch before processing: {:?}", 
+        log::debug!(
+            "Processing incoming delivery service message. \n Group epoch before processing: {:?}",
             self.group.epoch()
-            );
+        );
 
         let message_in =
             MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
@@ -232,16 +227,15 @@ impl MlsSwarmLogic for MlsEngine {
             }
 
             MlsMessageBodyIn::PrivateMessage(msg) => {
-                //let processed_message = self.group.process_message(&self.provider, msg).expect("Error processing message"); Panicked here, which stopped the program 
-                let processed_message = self
-                    .group
-                    .process_message(&self.provider, msg)
-                    .map_err(|e| {
-                        log::error!("Error processing message: {:?}", e);
-                        Error::msg("Error processing message.")
-                    })?;
-            
-                
+                //let processed_message = self.group.process_message(&self.provider, msg).expect("Error processing message"); Panicked here, which stopped the program
+                let processed_message =
+                    self.group
+                        .process_message(&self.provider, msg)
+                        .map_err(|e| {
+                            log::error!("Error processing message: {:?}", e);
+                            Error::msg("Error processing message.")
+                        })?;
+
                 match processed_message.into_content() {
                     ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
                         self.handle_incoming_commit(*staged_commit);
@@ -280,28 +274,30 @@ impl MlsSwarmLogic for MlsEngine {
 
     fn handle_incoming_welcome(&mut self, welcome: Welcome) {
         log::warn!("TODO: Verify welcome message before joining group.");
-        log::debug!("Node {:?} received Welcome message: {:?}", self.config.node_id, welcome);
+        log::debug!(
+            "Node {:?} received Welcome message: {:?}",
+            self.config.node_id,
+            welcome
+        );
         let _ = match StagedWelcome::new_from_welcome(
             &self.provider,
             &self.group_join_config,
             welcome,
             None,
         ) {
-            Ok(staged_join) =>  {
+            Ok(staged_join) => {
                 let group = staged_join
                     .into_group(&self.provider)
                     .expect("Error joining group from StagedWelcome");
                 log::info!("Joined group with ID: {:?}", group.group_id().as_slice());
                 self.group = group;
-            },
+            }
             Err(e) => {
                 log::error!("Error constructing staged join: {:?}", e);
                 return;
             }
         };
-
     }
-    
 
     fn handle_incoming_group_info(&mut self, _group_info: VerifiableGroupInfo) {
         log::warn!("Received GroupInfo message. No action taken. GroupInfo implies the use of external joins, which it not supported.");
@@ -347,21 +343,21 @@ impl MlsSwarmLogic for MlsEngine {
         for (_key_ref, key_package) in self.pending_key_packages.iter() {
             key_packages.push(key_package.clone());
         }
-        let (group_commit, welcome, _group_info) = self
-            .group
-            .add_members(&self.provider, &self.signature_key, &key_packages)?;
+        let (group_commit, welcome, _group_info) =
+            self.group
+                .add_members(&self.provider, &self.signature_key, &key_packages)?;
 
         let group_commit_out = group_commit
             .tls_serialize_detached()
             .expect("Error serializing group commit");
-        
+
         let welcome_out = welcome
             .tls_serialize_detached()
             .expect("Error serializing welcome");
-        
+
         let _ = self.group.merge_pending_commit(&self.provider);
         self.pending_key_packages.clear();
-        
+
         Ok((group_commit_out, welcome_out))
     }
 
@@ -383,10 +379,7 @@ impl MlsSwarmLogic for MlsEngine {
             .expect("Error handling staged commit.");
     }
 
-    fn remove_member(
-        &mut self,
-        leaf_node: LeafNodeIndex,
-    ) -> (Vec<u8>, Option<Vec<u8>>) {
+    fn remove_member(&mut self, leaf_node: LeafNodeIndex) -> (Vec<u8>, Option<Vec<u8>>) {
         let (group_commit, welcome_option, _group_info) = self
             .group
             .remove_members(&self.provider, &self.signature_key, &[leaf_node])
@@ -396,7 +389,7 @@ impl MlsSwarmLogic for MlsEngine {
         let group_commit_out = group_commit
             .tls_serialize_detached()
             .expect("Error serializing group commit");
-        let welcome_out = welcome_option // Only process welcome if it is Some 
+        let welcome_out = welcome_option // Only process welcome if it is Some
             .map(|welcome| {
                 welcome
                     .tls_serialize_detached()
@@ -408,34 +401,36 @@ impl MlsSwarmLogic for MlsEngine {
     fn update_self(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
         let pending = self.group.pending_commit();
         if pending.is_some() {
-            log::error!("Pending commit exists. Cannot update self. \n Pending commit: {:?}", pending);
+            log::error!(
+                "Pending commit exists. Cannot update self. \n Pending commit: {:?}",
+                pending
+            );
             return Err(Error::msg("Pending commit exists. Cannot update self."));
         }
 
-        match self.group
-            .self_update(
-                &self.provider,
-                &self.signature_key,
-                LeafNodeParameters::default(),
-            ){
-                Ok((group_commit, welcome_option, _group_info)) => {
-                    let group_commit_out = group_commit
-                        .tls_serialize_detached()
-                        .expect("Error serializing group commit");
-                    let welcome_out = welcome_option // Only process welcome if it is Some 
-                        .map(|welcome| {
-                            welcome
-                                .tls_serialize_detached()
-                                .expect("Error serializing welcome")
-                        });
-                        let _ = self.group.merge_pending_commit(&self.provider);
-                    log::info!("Updated self in group with ID: {:?}", self.group.group_id());
-                        return Ok((group_commit_out, welcome_out));
-                }
-                Err(e) => {
-                    log::error!("Error updating self: {:?}", e);
-                    return Err(Error::msg("Error updating self"));
-                }
+        match self.group.self_update(
+            &self.provider,
+            &self.signature_key,
+            LeafNodeParameters::default(),
+        ) {
+            Ok((group_commit, welcome_option, _group_info)) => {
+                let group_commit_out = group_commit
+                    .tls_serialize_detached()
+                    .expect("Error serializing group commit");
+                let welcome_out = welcome_option // Only process welcome if it is Some
+                    .map(|welcome| {
+                        welcome
+                            .tls_serialize_detached()
+                            .expect("Error serializing welcome")
+                    });
+                let _ = self.group.merge_pending_commit(&self.provider);
+                log::info!("Updated self in group with ID: {:?}", self.group.group_id());
+                return Ok((group_commit_out, welcome_out));
+            }
+            Err(e) => {
+                log::error!("Error updating self: {:?}", e);
+                return Err(Error::msg("Error updating self"));
+            }
         }
     }
 
@@ -448,10 +443,7 @@ impl MlsSwarmLogic for MlsEngine {
             .expect("Error serializing ratchet tree")
     }
 
-    fn add_new_member_from_bytes(
-        &mut self,
-        mut key_package_bytes: &[u8],
-    ) -> (Vec<u8>, Vec<u8>) {
+    fn add_new_member_from_bytes(&mut self, mut key_package_bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
         let message_in = MlsMessageIn::tls_deserialize(&mut key_package_bytes)
             .expect("Error deserializing message");
         let key_package_in = match message_in.extract() {
