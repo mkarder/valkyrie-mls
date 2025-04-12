@@ -1,5 +1,4 @@
 mod authentication;
-use authentication::{generate_signed_ed25519_credential, CredentialError, Ed25519credential};
 
 pub mod mls_group_handler;
 

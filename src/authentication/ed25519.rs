@@ -1,10 +1,14 @@
 use crate::authentication::error::CredentialError;
-use crate::authentication::issuer::{load_signing_key_from_issuer, load_verifying_key_from_issuer};
-use ed25519_dalek::{Signature, Signer, Verifier};
-use openmls::prelude::*;
+use ed25519_dalek::ed25519::signature::rand_core::OsRng;
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use openmls::{messages, prelude::*};
+use openmls_basic_credential::SignatureKeyPair;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use super::issuer::CredentialIssuer;
 
 const AUTHENTICATION_DIR: &str = "authentication";
 
@@ -95,42 +99,151 @@ impl TryFrom<Credential> for Ed25519credential {
     }
 }
 
-pub fn generate_signed_ed25519_credential(
-    identity: &str,
-    credential_key_bytes: Vec<u8>,
-    issuer: &str,
-    not_after: u64,
-    store: bool,
-) -> Result<Ed25519credential, CredentialError> {
-    let message = [
-        identity.as_bytes(),
-        &credential_key_bytes,
-        &not_after.to_le_bytes(),
-    ]
-    .concat();
+impl CredentialIssuer for Ed25519credential {
+    fn sign(&self, message: &[u8]) -> Vec<u8> {
+        assert!(self.credential_data.identity == self.credential_data.issuer);
 
-    let signing_key = load_signing_key_from_issuer(issuer.as_bytes().to_vec())?;
-    let signature = signing_key.sign(&message);
-
-    let credential_data = Ed25519CredentialData {
-        identity: identity.as_bytes().to_vec(),
-        credential_key_bytes,
-        not_after,
-        signature_bytes: signature.to_bytes().to_vec(),
-        issuer: issuer.as_bytes().to_vec(),
-    };
-
-    let credential = Ed25519credential::new(credential_data.clone());
-
-    if store {
-        // Store the credential in a file
-        let credential_path = format!("{}/credentials/{}.cred", AUTHENTICATION_DIR, identity);
-        std::fs::write(
-            credential_path,
-            bincode::serialize(&credential_data).expect("Serialization failed"),
-        )
-        .map_err(|_| CredentialError::DecodingError)?;
+        let signing_key = load_signing_key_from_issuer(self.credential_data.identity.clone())
+            .expect("Error loading signing key from issuer.");
+        let signature = signing_key.sign(message);
+        signature.to_bytes().to_vec()
     }
 
-    Ok(credential)
+    fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
+        assert!(self.credential_data.identity == self.credential_data.issuer);
+        let verifying_key = load_verifying_key_from_issuer(self.credential_data.identity.clone())
+            .expect("Error loading verifying key from issuer.");
+        let ed25519_signature = Signature::from_bytes(signature.try_into().unwrap());
+        verifying_key.verify(message, &ed25519_signature).is_ok()
+    }
+
+    fn public_key(&self) -> &[u8] {
+        assert!(self.credential_data.identity == self.credential_data.issuer);
+        self.credential_data.credential_key_bytes.as_slice()
+    }
+
+    fn issue(
+        &self,
+        identity: &str,
+        key_to_be_signed: &[u8],
+    ) -> Result<CredentialWithKey, CredentialError> {
+        assert!(self.credential_data.identity == self.credential_data.issuer);
+        // Verify that the provided bytes is a valid Ed25519 key.
+        assert!(VerifyingKey::from_bytes(key_to_be_signed.try_into().unwrap()).is_ok());
+
+        let not_after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 31556926; // 1 Year
+
+        let message = generate_signing_message(identity, key_to_be_signed, not_after);
+
+        let signing_key = load_signing_key_from_issuer(self.credential_data.identity.clone())
+            .expect("Error loading signing key from self.");
+        let signature = signing_key.sign(&message);
+
+        let credential_data = Ed25519CredentialData {
+            identity: identity.as_bytes().to_vec(),
+            credential_key_bytes: key_to_be_signed.to_vec(),
+            not_after,
+            signature_bytes: signature.to_bytes().to_vec(),
+            issuer: self.credential_data.identity.clone(),
+        };
+        let credential = Ed25519credential::new(credential_data.clone());
+        let signature_public_key = SignaturePublicKey::from(key_to_be_signed.to_vec());
+
+        Ok(CredentialWithKey {
+            credential: credential.into(),
+            signature_key: signature_public_key,
+        })
+    }
+
+    fn create_issuer(identity: &str) -> Self {
+        // Generate a new Ed25519 key pair
+        let mut csprng = OsRng;
+        let signing_key = SigningKey::generate(&mut csprng);
+
+        // Write public and secret key parts to files
+        let pub_key_path = format!("{}/keys/{}.pub", AUTHENTICATION_DIR, identity);
+        assert!(std::path::Path::new(&pub_key_path).exists());
+        std::fs::write(pub_key_path, signing_key.verifying_key().as_bytes())
+            .expect("Failed to write public key");
+
+        let priv_key_path = format!("{}/keys/{}.priv", AUTHENTICATION_DIR, identity);
+        assert!(std::path::Path::new(&priv_key_path).exists());
+        std::fs::write(priv_key_path, signing_key.to_bytes()).expect("Failed to write private key");
+
+        // Create the credential
+        let issuer = identity.as_bytes().to_vec();
+        let not_after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 31556926; // 1 Year
+
+        let message =
+            generate_signing_message(identity, signing_key.verifying_key().as_bytes(), not_after);
+
+        let signature = signing_key.sign(&message);
+        let signature_bytes = signature.to_bytes().to_vec();
+
+        Ed25519credential::new(Ed25519CredentialData {
+            identity: identity.as_bytes().to_vec(),
+            credential_key_bytes: signing_key.verifying_key().as_bytes().to_vec(),
+            not_after,
+            signature_bytes,
+            issuer,
+        })
+    }
+}
+
+pub fn generate_signing_message(
+    identity: &str,
+    credential_key_bytes: &[u8],
+    not_after: u64,
+) -> Vec<u8> {
+    [
+        identity.as_bytes(),
+        credential_key_bytes,
+        &not_after.to_le_bytes(),
+    ]
+    .concat()
+}
+
+pub fn load_verifying_key_from_issuer(
+    issuer_bytes: Vec<u8>,
+) -> Result<VerifyingKey, CredentialError> {
+    let issuer_string =
+        String::from_utf8(issuer_bytes).map_err(|_| CredentialError::IssuerEncodingError)?;
+    let path = format!("{}/keys/{}.pub", AUTHENTICATION_DIR, issuer_string);
+
+    if Path::new(&path).exists() {
+        let data = fs::read(&path).unwrap();
+        let pub_key_bytes = extract_raw_ed25519_key_from_der(data)?;
+        VerifyingKey::from_bytes(&pub_key_bytes).map_err(|_| CredentialError::VerifyingError)
+    } else {
+        Err(CredentialError::UnknownIssuer)
+    }
+}
+
+pub fn load_signing_key_from_issuer(issuer_bytes: Vec<u8>) -> Result<SigningKey, CredentialError> {
+    let issuer_string =
+        String::from_utf8(issuer_bytes).map_err(|_| CredentialError::IssuerEncodingError)?;
+    let path = format!("{}/keys/{}.priv", AUTHENTICATION_DIR, issuer_string);
+
+    if Path::new(&path).exists() {
+        let data = fs::read(&path).unwrap();
+        let priv_key_bytes = extract_raw_ed25519_key_from_der(data)?;
+        Ok(SigningKey::from_bytes(&priv_key_bytes))
+    } else {
+        Err(CredentialError::UnknownIssuer)
+    }
+}
+
+fn extract_raw_ed25519_key_from_der(data: Vec<u8>) -> Result<[u8; 32], CredentialError> {
+    let key_bytes = &data[data.len() - 32..];
+    key_bytes
+        .try_into()
+        .map_err(|_| CredentialError::VerifyingError)
 }

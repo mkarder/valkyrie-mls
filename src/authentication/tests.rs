@@ -10,11 +10,50 @@ mod tests {
     };
 
     use crate::authentication::{
-        generate_signed_ed25519_credential, load_signing_key_from_issuer,
-        load_verifying_key_from_issuer, Ed25519CredentialData, Ed25519credential, X509Credential,
+        ed25519::{
+            generate_signing_message, load_signing_key_from_issuer, load_verifying_key_from_issuer,
+            Ed25519CredentialData,
+        },
+        x509::X509Credential,
+        CredentialError, Ed25519credential,
     };
 
     const AUTHENTICATION_DIR: &str = "authentication";
+
+    pub fn generate_signed_ed25519_credential(
+        identity: &str,
+        credential_key_bytes: Vec<u8>,
+        issuer: &str,
+        not_after: u64,
+        store: bool,
+    ) -> Result<Ed25519credential, CredentialError> {
+        let message = generate_signing_message(identity, &credential_key_bytes, not_after);
+
+        let signing_key = load_signing_key_from_issuer(issuer.as_bytes().to_vec())?;
+        let signature = signing_key.sign(&message);
+
+        let credential_data = Ed25519CredentialData {
+            identity: identity.as_bytes().to_vec(),
+            credential_key_bytes,
+            not_after,
+            signature_bytes: signature.to_bytes().to_vec(),
+            issuer: issuer.as_bytes().to_vec(),
+        };
+
+        let credential = Ed25519credential::new(credential_data.clone());
+
+        if store {
+            // Store the credential in a file
+            let credential_path = format!("{}/credentials/{}.cred", AUTHENTICATION_DIR, identity);
+            std::fs::write(
+                credential_path,
+                bincode::serialize(&credential_data).expect("Serialization failed"),
+            )
+            .map_err(|_| CredentialError::DecodingError)?;
+        }
+
+        Ok(credential)
+    }
 
     fn gen_test_ed25519_credential_data() -> Ed25519CredentialData {
         let signature_algorithm =
@@ -53,11 +92,6 @@ mod tests {
         }
     }
 
-    fn gen_test_ed25519_credential() -> Ed25519credential {
-        let credential_data = gen_test_ed25519_credential_data();
-        Ed25519credential::new(credential_data)
-    }
-
     #[test]
     fn load_x509_credential_from_file() {
         // Load a sample X.509 certificate from a file
@@ -94,6 +128,9 @@ mod tests {
     }
 
     #[test]
+    fn tls_serialization() {}
+
+    #[test]
     fn ed25519_credential() {
         let signature_algorithm =
             Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519.signature_algorithm();
@@ -109,16 +146,32 @@ mod tests {
             .as_secs()
             + 3600; // 1 hour from now
         let store = true;
-        let credential_result = generate_signed_ed25519_credential(
-            identity,
-            credential_key.public().to_vec(),
-            issuer,
-            not_after,
-            store,
-        );
 
-        assert!(credential_result.is_ok(), "{:?}", credential_result);
-        let credential = credential_result.unwrap();
+        // Generate a valid, signed Ed25519 credential
+        let message = generate_signing_message(identity, &credential_key.public(), not_after);
+
+        let signing_key = load_signing_key_from_issuer(issuer.as_bytes().to_vec()).unwrap();
+        let signature = signing_key.sign(&message);
+
+        let credential_data = Ed25519CredentialData {
+            identity: identity.as_bytes().to_vec(),
+            credential_key_bytes: credential_key.public().to_vec(),
+            not_after,
+            signature_bytes: signature.to_bytes().to_vec(),
+            issuer: issuer.as_bytes().to_vec(),
+        };
+
+        let credential = Ed25519credential::new(credential_data.clone());
+
+        // Store the credential in a file
+        let credential_path = format!("{}/credentials/{}.cred", AUTHENTICATION_DIR, identity);
+        std::fs::write(
+            credential_path,
+            bincode::serialize(&credential_data).expect("Serialization failed"),
+        )
+        .map_err(|_| CredentialError::DecodingError)
+        .unwrap();
+
         // Assert credential was stored correctly
         let credential_path = format!("{}/credentials/{}.cred", AUTHENTICATION_DIR, identity);
         assert!(std::path::Path::new(&credential_path).exists());
@@ -132,21 +185,48 @@ mod tests {
 
         // Validate the credential
         let signature_pub_key = SignaturePublicKey::from(credential_key.public().to_vec());
-        credential
-            .validate(&signature_pub_key)
-            .expect("Credential validation failed");
+
+        assert!(
+            credential.validate(&signature_pub_key).is_ok(),
+            "Credential validation failed"
+        );
 
         // Invalid signature
+        let invalid_signature = vec![0; 64]; // Invalid signature
+        let invalid_credential = Ed25519credential::new(Ed25519CredentialData {
+            identity: identity.as_bytes().to_vec(),
+            credential_key_bytes: credential_key.public().to_vec(),
+            signature_bytes: invalid_signature,
+            issuer: issuer.as_bytes().to_vec(),
+            not_after,
+        });
+        assert!(
+            invalid_credential.validate(&signature_pub_key).is_err(),
+            "Invalid signature should fail validation"
+        );
+
+        // Expired credential
+        let expired_not_after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 3600; // 1 hour in the past
+
+        let expired_credential = Ed25519credential::new(Ed25519CredentialData {
+            identity: identity.as_bytes().to_vec(),
+            credential_key_bytes: credential_key.public().to_vec(),
+            signature_bytes: signature.to_bytes().to_vec(),
+            issuer: issuer.as_bytes().to_vec(),
+            not_after: expired_not_after,
+        });
+        assert!(
+            expired_credential.validate(&signature_pub_key).is_err(),
+            "Expired credential should fail validation"
+        );
 
         // Clean up the test file
         std::fs::remove_file(&credential_path).expect("Failed to delete test credential file");
     }
-
-    #[test]
-    fn valid_ed25519_signature() {}
-
-    #[test]
-    fn invalid_ed25519_signature() {}
 
     #[test]
     fn expired_ed25519_credential() {}
