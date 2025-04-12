@@ -116,7 +116,7 @@ impl X509Credential {
 
     pub fn validate(&self) -> bool {
         // Validate the X.509 certificate
-        true
+        false
     }
 
     pub fn from_der(der: &[u8]) -> Result<Self, Error> {
@@ -271,14 +271,17 @@ fn load_verifying_key_from_issuer(issuer_bytes: Vec<u8>) -> Result<VerifyingKey,
     let issuer_path = format!("{}/keys/{}.pub", AUTHENTICATION_DIR, issuer_string);
     if std::path::Path::new(&issuer_path).exists() {
         let data = std::fs::read(&issuer_path).unwrap();
-        // Simple manual extraction: assume 12-byte ASN.1 header
-        let key_bytes = &data[data.len() - 32..];
-        let pub_key_bytes: &[u8; 32] = key_bytes
-            .try_into()
-            .map_err(|_| CredentialError::VerifyingError)?;
-
-        let pub_key = VerifyingKey::from_bytes(pub_key_bytes);
-        Ok(pub_key.unwrap())
+        let pub_key_bytes = extract_raw_ed25519_key_from_der(data);
+        match pub_key_bytes {
+            Ok(bytes) => {
+                let pub_key = VerifyingKey::from_bytes(&bytes);
+                return pub_key.map_err(|_| CredentialError::VerifyingError);
+            }
+            Err(_) => {
+                log::error!("Failed to extract public key from DER file");
+                return Err(CredentialError::VerifyingError);
+            }
+        }
     } else {
         log::error!("Issuer key file not found: {}", issuer_path);
         Err(CredentialError::UnknownIssuer)
@@ -293,18 +296,32 @@ fn load_signing_key_from_issuer(issuer_bytes: Vec<u8>) -> Result<SigningKey, Cre
     let issuer_path = format!("{}/keys/{}.priv", AUTHENTICATION_DIR, issuer_string);
     if std::path::Path::new(&issuer_path).exists() {
         let data = std::fs::read(&issuer_path).unwrap();
-        // Simple manual extraction: assume 12-byte ASN.1 header
-        let key_bytes = &data[data.len() - 32..];
-        let priv_key_bytes: &[u8; 32] = key_bytes
-            .try_into()
-            .map_err(|_| CredentialError::VerifyingError)?;
-
-        let priv_key = SigningKey::from_bytes(priv_key_bytes);
-        Ok(priv_key)
+        let priv_key_bytes = extract_raw_ed25519_key_from_der(data);
+        match priv_key_bytes {
+            Ok(bytes) => {
+                return Ok(SigningKey::from_bytes(&bytes));
+            }
+            Err(_) => {
+                log::error!("Failed to extract private key from DER file");
+                return Err(CredentialError::VerifyingError);
+            }
+        }
     } else {
         log::error!("Issuer key file not found: {}", issuer_path);
         Err(CredentialError::UnknownIssuer)
     }
+}
+
+fn extract_raw_ed25519_key_from_der(data: Vec<u8>) -> Result<[u8; 32], CredentialError> {
+    // Convert DER-encoded ed25519 key to raw bytes
+    // We assume 12-byte ASN.1 header from the .DER encoding
+    // and extract the last 32 bytes as the public key
+    let key_bytes = &data[data.len() - 32..];
+    let key_bytes: &[u8; 32] = key_bytes
+        .try_into()
+        .map_err(|_| CredentialError::VerifyingError)?;
+
+    Ok(*key_bytes)
 }
 
 fn generate_signed_ed25519_credential(
@@ -355,6 +372,13 @@ fn generate_credential_with_key(
         credential: ed25519_credential.into(),
         signature_key,
     }
+}
+
+trait RootSigner {
+    fn sign(&self, message: &[u8]) -> Signature;
+    fn verify(&self, message: &[u8], signature: &Signature) -> bool;
+    fn public_key(&self) -> &[u8];
+    fn issue(&self, identity: &str) -> Result<Ed25519credential, CredentialError>;
 }
 
 #[cfg(test)]
@@ -417,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_ed25519_keys() {
+    fn load_ed25519_keys_from_file() {
         let issuer = "test-ca";
         load_verifying_key_from_issuer(issuer.as_bytes().to_vec())
             .expect("Error loading verifying key from test issuer.");
@@ -426,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ed25519_credentialdata_bincode_roundtrip() {
+    fn ed25519_credentialdata_bincode_roundtrip() {
         // Generate a test Ed25519CredentialData
         let original = gen_test_ed25519_credential_data();
 
@@ -442,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_signed_ed25519_credential() {
+    fn ed25519_credential() {
         let signature_algorithm =
             Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519.signature_algorithm();
 
