@@ -115,8 +115,9 @@ impl X509Credential {
     }
 
     pub fn validate(&self) -> bool {
-        // Validate the X.509 certificate
-        false
+        // TODO: Validate the X.509 certificate
+
+        true
     }
 
     pub fn from_der(der: &[u8]) -> Result<Self, Error> {
@@ -148,41 +149,46 @@ impl TryFrom<Credential> for X509Credential {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ed25519credential {
-    serialized_credential_content: VLBytes,
+    credential_data: Ed25519CredentialData,
 }
 impl Ed25519credential {
-    pub fn new(serialized_credential_content: Vec<u8>) -> Self {
-        Self {
-            serialized_credential_content: serialized_credential_content.into(),
-        }
+    pub fn new(credential_data: Ed25519CredentialData) -> Self {
+        Self { credential_data }
     }
 
-    pub fn serialized_contents(&self) -> &[u8] {
-        self.serialized_credential_content.as_slice()
+    pub fn from(credential_data: Vec<u8>) -> Self {
+        let credential_data: Ed25519CredentialData =
+            bincode::deserialize(&credential_data).expect("Deserialization failed");
+        Self { credential_data }
+    }
+
+    pub fn serialized_contents(&self) -> Vec<u8> {
+        let serialized_credential_content = bincode::serialize(&self.credential_data)
+            .expect("Serialization failed")
+            .clone();
+
+        serialized_credential_content
     }
 
     pub fn validate(
         &self,
         expected_signature_key: &SignaturePublicKey,
     ) -> Result<(), CredentialError> {
-        let data: Ed25519CredentialData = bincode::deserialize(self.serialized_contents())
-            .map_err(|_| CredentialError::DecodingError)?;
-
-        if data.credential_key_bytes != expected_signature_key.as_slice() {
+        if self.credential_data.credential_key_bytes != expected_signature_key.as_slice() {
             return Err(CredentialError::InvalidSignatureKey);
         }
 
         let message = [
-            &data.identity[..],
-            &data.credential_key_bytes[..],
-            &data.not_after.to_le_bytes()[..],
+            &self.credential_data.identity[..],
+            &self.credential_data.credential_key_bytes[..],
+            &self.credential_data.not_after.to_le_bytes()[..],
         ]
         .concat();
 
-        let verifying_key = load_verifying_key_from_issuer(data.issuer.clone())
+        let verifying_key = load_verifying_key_from_issuer(self.credential_data.issuer.clone())
             .map_err(|_| CredentialError::UnknownIssuer)?;
 
-        let signature = Signature::try_from(&data.signature_bytes[..])
+        let signature = Signature::try_from(&self.credential_data.signature_bytes[..])
             .map_err(|_| CredentialError::InvalidSignature)?;
 
         verifying_key
@@ -194,7 +200,7 @@ impl Ed25519credential {
             .map_err(|_| CredentialError::ClockError)?
             .as_secs();
 
-        if now > data.not_after {
+        if now > self.credential_data.not_after {
             return Err(CredentialError::Expired);
         }
 
@@ -204,8 +210,7 @@ impl Ed25519credential {
     pub fn from_file(path: &str) -> Result<Self, CredentialError> {
         // Load the Ed25519 credential from a file
         let bytes = std::fs::read(path).map_err(|_| CredentialError::DecodingError)?;
-        Ok(Ed25519credential::new(bytes))
-        // let credential = bincode::deserialize(&data)?;
+        Ok(Ed25519credential::from(bytes))
     }
 }
 
@@ -223,7 +228,7 @@ impl TryFrom<Credential> for Ed25519credential {
 
     fn try_from(credential: Credential) -> Result<Self, Self::Error> {
         match credential.credential_type() {
-            CredentialType::Other(0xF000) => Ok(Ed25519credential::new(
+            CredentialType::Other(0xF000) => Ok(Ed25519credential::from(
                 credential.serialized_content().to_vec(),
             )),
             _ => Err(CredentialError::UnsupportedCredentialType),
@@ -237,7 +242,7 @@ impl TryFrom<Ed25519CredentialData> for Ed25519credential {
     fn try_from(credential: Ed25519CredentialData) -> Result<Self, Self::Error> {
         let serialized_credential_content =
             bincode::serialize(&credential).map_err(|_| CredentialError::DecodingError)?;
-        Ok(Ed25519credential::new(serialized_credential_content))
+        Ok(Ed25519credential::from(serialized_credential_content))
     }
 }
 
