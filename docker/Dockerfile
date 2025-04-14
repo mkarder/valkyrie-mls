@@ -1,7 +1,7 @@
 # ---------------------------------------------------------
 # Stage 1: Build the Rust application
 # ---------------------------------------------------------
-FROM ubuntu:latest AS builder
+FROM ubuntu:18.04 AS builder
 
 # Set environment variables for non-interactive installations
 ENV DEBIAN_FRONTEND=noninteractive
@@ -39,10 +39,12 @@ RUN cargo build
 # ---------------------------------------------------------
 # Stage 2: Final runtime environment
 # ---------------------------------------------------------
-FROM ubuntu:latest
+FROM ubuntu:18.04
 
 # Set environment variables for non-interactive installations
 ENV DEBIAN_FRONTEND=noninteractive
+ENV HOME=/root
+
 
 ARG NODE_NAME
 ARG NODE_IP
@@ -64,10 +66,10 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean
 
 # Corosync setup
-COPY docker/corosync.conf /etc/corosync/corosync.conf.template
+COPY ./corosync.conf /etc/corosync/corosync.conf.template
 
 # Copy config files 
-COPY src/config.toml valkyrie-mls/config.toml
+COPY ./config.toml /root/valkyrie-mls/config.toml
 
 # Replace placeholders in the Corosync config
 RUN sed "s/{{NODE_IP}}/$NODE_IP/" /etc/corosync/corosync.conf.template > /etc/corosync/corosync.conf
@@ -76,15 +78,15 @@ RUN sed "s/{{NODE_IP}}/$NODE_IP/" /etc/corosync/corosync.conf.template > /etc/co
 EXPOSE 5404/udp 5405/udp
 
 # Copy the entrypoint script
-COPY docker/entrypoint.sh valkyrie-mls/entrypoint.sh
-RUN chmod +x valkyrie-mls/entrypoint.sh
+COPY docker/entrypoint.sh /root/valkyrie-mls/entrypoint.sh
+RUN chmod +x /root/valkyrie-mls/entrypoint.sh
 
 # Copy the compiled Rust binary from the builder stage
 # (Adjust the path and binary name if your actual target differs)
-COPY --from=builder /app/target/debug/valkyrie-mls valkyrie-mls/valkyrie-mls
+COPY --from=builder /app/target/debug/valkyrie-mls /root/valkyrie-mls/valkyrie-mls
 
 # Set the entrypoint to the script
-ENTRYPOINT ["valkyrie-mls/entrypoint.sh"]
+ENTRYPOINT ["/root/valkyrie-mls/entrypoint.sh"]
 
 # Default command if no arguments are provided
 CMD ["bash"]

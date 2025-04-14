@@ -8,7 +8,7 @@ The lab is setup using one host machine (running Ubuntu:latest), connected to th
 ### Directory overview
 | Folder         | Description |
 |---------------|------------------------------------------------------------|
-| lab           | Root directory containing all project-related components. |
+| valkyrie-mls  | Root directory containing all project-related components. |
 | ├─ corosync   | Official Corosync repository cloned from GitHub, used for group communication and cluster messaging. |
 | ├─ corosync-app | Our custom implementation built on top of Corosync, providing a message delivery service. |
 | ├─ docker     | Configuration and scripts for setting up a Docker-based network, simulating the distributed environment for testing. |
@@ -16,7 +16,7 @@ The lab is setup using one host machine (running Ubuntu:latest), connected to th
 
 
 
-
+## Network 
 ### Network configuration
 A custom bridge network named `bridge_swarm` is created. This setup allows three nodes to communicate directly using static IPs on a custom bridge network. The `bridge_swarm` network acts as an isolated private network. The network is setup with the following settings: 
 - Uses the bridge driver, which allows inter-container communication
@@ -35,17 +35,26 @@ A custom bridge network named `bridge_swarm` is created. This setup allows three
 | Default gateway | `10.10.0.1`    |
 | Host machine    | `10.10.0.1`    |
 | Node *i*        | `10.10.0.i`    |
-| Jetson Nano     | `10.0.0.100`  |
+| Jetson Nano     | `10.10.0.100`  |
 
 ### Containers
 The containers are built through the `Dockerfile`, an their individual names and IP addresses are defined in the `docker-compose.yaml`. They are all installed with basic network tools, like `ping`, `iperf3`, as well as `rust`, `openmls` and `corosync` installed. 
+
+
+
+
+
 
 ### Set up the lab
 **Prerequisites**:
 - Make sure the lab machine and the Jetson Nano is connected via Ethernet. 
 	- `enp0s31f6` should be chosen as the physical interface on the *host*.
-	- `eth0` should be set as the physical interface on the Jetson nano, with the IP address `10.0.0.100` added to the interface.
+	- `eth0` should be set as the physical interface on the Jetson nano, with the IP address `10.10.0.100` added to the interface.
  
+### Set ethernet interface to be a slave to the docker network  (Might need to run this everytime you remove and rebuild the network)
+ ```bash
+   sudo ip link set enp0s31f6 master bridge_swarm
+   ```
 
 ## Docker 
 ### Build docker images 

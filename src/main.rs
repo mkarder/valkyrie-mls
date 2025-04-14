@@ -11,6 +11,8 @@ use config::Config;
 use mls_group_handler::MlsEngine;
 #[cfg(target_os = "linux")]
 use router::Router;
+use std::env;
+
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -19,7 +21,8 @@ async fn main() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         log::info!("Starting MLS Valkyrie...");
-        let config = Config::from_file("./config.toml").unwrap();
+        let config_path = format!("{}/valkyrie-mls/config.toml", env::var("HOME").unwrap());
+        let config = Config::from_file(config_path.as_str()).unwrap();
 
         let mls_engine = MlsEngine::new(config.mls.clone());
 
