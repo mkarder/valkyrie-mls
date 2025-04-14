@@ -225,7 +225,6 @@ mod tests {
         );
 
         // Clean up the test file
-        std::fs::remove_file(&credential_path).expect("Failed to delete test credential file");
     }
 
     #[test]
