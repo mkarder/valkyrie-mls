@@ -12,14 +12,16 @@ mod tests {
     use crate::authentication::{
         ed25519::{
             generate_signing_message, load_signing_key_from_issuer, load_verifying_key_from_issuer,
-            Ed25519CredentialData,
+            Ed25519CredentialData, Ed25519Issuer,
         },
+        issuer::CredentialIssuer,
         x509::X509Credential,
         CredentialError, Ed25519credential,
     };
 
     const AUTHENTICATION_DIR: &str = "authentication";
 
+    #[allow(dead_code)]
     pub fn generate_signed_ed25519_credential(
         identity: &str,
         credential_key_bytes: Vec<u8>,
@@ -27,7 +29,8 @@ mod tests {
         not_after: u64,
         store: bool,
     ) -> Result<Ed25519credential, CredentialError> {
-        let message = generate_signing_message(identity, &credential_key_bytes, not_after);
+        let message =
+            generate_signing_message(identity.as_bytes(), &credential_key_bytes, not_after);
 
         let signing_key = load_signing_key_from_issuer(issuer.as_bytes().to_vec())?;
         let signature = signing_key.sign(&message);
@@ -145,10 +148,10 @@ mod tests {
             .unwrap()
             .as_secs()
             + 3600; // 1 hour from now
-        let store = true;
 
         // Generate a valid, signed Ed25519 credential
-        let message = generate_signing_message(identity, &credential_key.public(), not_after);
+        let message =
+            generate_signing_message(identity.as_bytes(), &credential_key.public(), not_after);
 
         let signing_key = load_signing_key_from_issuer(issuer.as_bytes().to_vec()).unwrap();
         let signature = signing_key.sign(&message);
@@ -192,7 +195,8 @@ mod tests {
         );
 
         // Invalid signature
-        let invalid_signature = vec![0; 64]; // Invalid signature
+        let mut invalid_signature = signature.to_vec().clone();
+        invalid_signature[0] ^= 0xFF; // Corrupt the signature
         let invalid_credential = Ed25519credential::new(Ed25519CredentialData {
             identity: identity.as_bytes().to_vec(),
             credential_key_bytes: credential_key.public().to_vec(),
@@ -229,8 +233,54 @@ mod tests {
     }
 
     #[test]
-    fn expired_ed25519_credential() {}
+    fn wrong_signature_key_fails_validation() {
+        let valid_cred_data = gen_test_ed25519_credential_data();
+        let mut wrong_key = valid_cred_data.credential_key_bytes.clone();
+        wrong_key[0] ^= 0xFF; // Corrupt the key
+
+        let wrong_pub_key = SignaturePublicKey::from(wrong_key);
+
+        let valid_cred = Ed25519credential::new(valid_cred_data);
+
+        assert!(
+            valid_cred.validate(&wrong_pub_key).is_err(),
+            "Validation should fail with incorrect signature key"
+        );
+    }
 
     #[test]
-    fn unknown_issuer() {}
+    fn ed25519_issuer_issues_valid_credential() {
+        let issuer_id = "issuer-a";
+        let issuer = Ed25519Issuer::create_issuer(issuer_id);
+
+        let signature_algorithm =
+            Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519.signature_algorithm();
+        let client_keypair = SignatureKeyPair::new(signature_algorithm).unwrap();
+        let pub_key = client_keypair.public().to_vec();
+
+        let cred_with_key = issuer.issue("drone-999", &pub_key).unwrap();
+
+        assert_eq!(cred_with_key.signature_key.as_slice(), pub_key.as_slice());
+
+        let parsed_cred = Ed25519credential::try_from(cred_with_key.credential.clone()).unwrap();
+        parsed_cred.validate(&cred_with_key.signature_key).unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn ed25519_issuer_rejects_invalid_pubkey() {
+        let issuer = Ed25519Issuer::create_issuer("test");
+
+        let invalid_key = vec![0u8; 31]; // Invalid length (should be 32)
+        issuer.issue("invalid-drone", &invalid_key).unwrap();
+    }
+
+    #[test]
+    fn ed25519_issuer_sign_and_verify() {
+        let issuer = Ed25519Issuer::create_issuer("self-signed");
+
+        let message = b"important auth message";
+        let signature = issuer.sign(message);
+        assert!(issuer.verify(message, &signature));
+    }
 }

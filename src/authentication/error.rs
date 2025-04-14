@@ -9,4 +9,5 @@ pub enum CredentialError {
     UnsupportedCredentialType,
     VerifyingError,
     IssuerEncodingError,
+    FileReadError,
 }

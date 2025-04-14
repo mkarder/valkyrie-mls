@@ -10,7 +10,7 @@ const AUTHENTICATION_DIR: &str = "authentication";
 pub trait CredentialIssuer {
     fn sign(&self, message: &[u8]) -> Vec<u8>;
     fn verify(&self, message: &[u8], signature: &[u8]) -> bool;
-    fn public_key(&self) -> &[u8];
+    fn public_key(&self) -> Vec<u8>;
     fn issue(
         &self,
         identity: &str,
