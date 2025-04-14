@@ -1,3 +1,5 @@
+use crate::authentication::ed25519::Ed25519SignatureKeyPair;
+use crate::authentication::Ed25519credential;
 use crate::config::MlsConfig;
 use anyhow::{Context, Error};
 use openmls::group::MlsGroup;
@@ -53,6 +55,7 @@ impl MlsEngine {
         let credential_type: CredentialType = match config.credential_type.to_lowercase().as_str() {
             "basic" => CredentialType::Basic,
             "x509" => CredentialType::X509,
+            "ed25519" => CredentialType::Other(0xF000),
             other => panic!(
                 "Cannot initialize Mls Component. Unsupported credential type: {}",
                 other
@@ -463,20 +466,65 @@ fn generate_credential_with_key(
     signature_algorithm: SignatureScheme,
     provider: &impl OpenMlsProvider,
 ) -> (CredentialWithKey, SignatureKeyPair) {
-    let _ = credential_type;
-    let credential = BasicCredential::new(identity);
-    let signature_keys =
-        SignatureKeyPair::new(signature_algorithm).expect("Error generating a signature key pair.");
-    signature_keys
-        .store(provider.storage())
-        .expect("Error storing signature keys.");
-    (
-        CredentialWithKey {
-            credential: credential.into(),
-            signature_key: signature_keys.public().into(),
+    match credential_type {
+        CredentialType::Basic => {
+            log::info!("Generating Basic credential.");
+            let credential = BasicCredential::new(identity);
+            let signature_keys = SignatureKeyPair::new(signature_algorithm)
+                .expect("Error generating a signature key pair.");
+            signature_keys
+                .store(provider.storage())
+                .expect("Error storing signature keys.");
+
+            (
+                CredentialWithKey {
+                    credential: credential.into(),
+                    signature_key: signature_keys.public().into(),
+                },
+                signature_keys,
+            )
+        }
+        CredentialType::X509 => {
+            log::info!("Generating X.509 credential.");
+            log::error!("X.509 credential generation not implemented. Using Basic credential.");
+            let credential = BasicCredential::new(identity);
+            let signature_keys = SignatureKeyPair::new(signature_algorithm)
+                .expect("Error generating a signature key pair.");
+            signature_keys
+                .store(provider.storage())
+                .expect("Error storing signature keys.");
+
+            (
+                CredentialWithKey {
+                    credential: credential.into(),
+                    signature_key: signature_keys.public().into(),
+                },
+                signature_keys,
+            )
+        }
+        CredentialType::Other(custom) => match custom {
+            0xF000 => {
+                log::info!("Generating Ed25519 credential.");
+
+                let credential = Ed25519credential::from_file(identity.clone())
+                    .expect("Error loading Ed25519 credential from file.");
+                let ed25519_key_pair = Ed25519SignatureKeyPair::from_file(identity.clone())
+                    .expect("Error loading Ed25519 signature key from file.");
+
+                (
+                    CredentialWithKey {
+                        credential: credential.into(),
+                        signature_key: ed25519_key_pair.signature_key_pair().public().into(),
+                    },
+                    ed25519_key_pair.signature_key_pair,
+                )
+            }
+            _ => {
+                log::error!("Unsupported credential type: {}", custom);
+                panic!("Unsupported credential type.");
+            }
         },
-        signature_keys,
-    )
+    }
 }
 
 fn generate_key_package(

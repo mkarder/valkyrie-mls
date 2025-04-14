@@ -1,11 +1,5 @@
-use ed25519_dalek::{SigningKey, VerifyingKey};
-use openmls::prelude::{CredentialWithKey, Signature};
-use std::fs;
-use std::path::Path;
-
 use crate::authentication::error::CredentialError;
-
-const AUTHENTICATION_DIR: &str = "authentication";
+use openmls::prelude::CredentialWithKey;
 
 pub trait CredentialIssuer {
     fn sign(&self, message: &[u8]) -> Vec<u8>;

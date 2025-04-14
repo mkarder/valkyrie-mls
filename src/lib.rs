@@ -1,4 +1,4 @@
-mod authentication;
+pub mod authentication;
 
 pub mod mls_group_handler;
 

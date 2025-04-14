@@ -11,8 +11,8 @@ mod tests {
 
     use crate::authentication::{
         ed25519::{
-            generate_signing_message, load_signing_key_from_issuer, load_verifying_key_from_issuer,
-            Ed25519CredentialData, Ed25519Issuer,
+            generate_signing_message, load_signing_key_from_file, load_verifying_key_from_file,
+            Ed25519CredentialData, Ed25519Issuer, Ed25519SignatureKeyPair,
         },
         issuer::CredentialIssuer,
         x509::X509Credential,
@@ -32,7 +32,7 @@ mod tests {
         let message =
             generate_signing_message(identity.as_bytes(), &credential_key_bytes, not_after);
 
-        let signing_key = load_signing_key_from_issuer(issuer.as_bytes().to_vec())?;
+        let signing_key = load_signing_key_from_file(issuer.as_bytes().to_vec())?;
         let signature = signing_key.sign(&message);
 
         let credential_data = Ed25519CredentialData {
@@ -81,7 +81,7 @@ mod tests {
         ]
         .concat();
 
-        let signature = load_signing_key_from_issuer(issuer.clone())
+        let signature = load_signing_key_from_file(issuer.clone())
             .unwrap()
             .sign(&message);
         let signature_bytes = signature.to_bytes().to_vec();
@@ -108,9 +108,9 @@ mod tests {
     #[test]
     fn load_ed25519_keys_from_file() {
         let issuer = "test-ca";
-        load_verifying_key_from_issuer(issuer.as_bytes().to_vec())
+        load_verifying_key_from_file(issuer.as_bytes().to_vec())
             .expect("Error loading verifying key from test issuer.");
-        load_signing_key_from_issuer(issuer.as_bytes().to_vec())
+        load_signing_key_from_file(issuer.as_bytes().to_vec())
             .expect("Error loading signing key from test issuer.");
     }
 
@@ -153,7 +153,7 @@ mod tests {
         let message =
             generate_signing_message(identity.as_bytes(), &credential_key.public(), not_after);
 
-        let signing_key = load_signing_key_from_issuer(issuer.as_bytes().to_vec()).unwrap();
+        let signing_key = load_signing_key_from_file(issuer.as_bytes().to_vec()).unwrap();
         let signature = signing_key.sign(&message);
 
         let credential_data = Ed25519CredentialData {
@@ -167,20 +167,14 @@ mod tests {
         let credential = Ed25519credential::new(credential_data.clone());
 
         // Store the credential in a file
-        let credential_path = format!("{}/credentials/{}.cred", AUTHENTICATION_DIR, identity);
-        std::fs::write(
-            credential_path,
-            bincode::serialize(&credential_data).expect("Serialization failed"),
-        )
-        .map_err(|_| CredentialError::DecodingError)
-        .unwrap();
+        credential.store().expect("Failed to store credential");
 
         // Assert credential was stored correctly
         let credential_path = format!("{}/credentials/{}.cred", AUTHENTICATION_DIR, identity);
         assert!(std::path::Path::new(&credential_path).exists());
 
         // Load the credential from the file
-        let loaded_credential = Ed25519credential::from_file(&credential_path).unwrap();
+        let loaded_credential = Ed25519credential::from_file(identity.as_bytes().to_vec()).unwrap();
         assert_eq!(
             loaded_credential.serialized_contents(),
             credential.serialized_contents()
@@ -264,6 +258,30 @@ mod tests {
 
         let parsed_cred = Ed25519credential::try_from(cred_with_key.credential.clone()).unwrap();
         parsed_cred.validate(&cred_with_key.signature_key).unwrap();
+
+        // Clean up the test file
+        // std::fs::remove_file(&credential_path).expect("Failed to delete test credential file");
+
+        // Load issuer and key from file then issue credential
+        let ca = "test-ca";
+        let alice = "Alice";
+
+        let issuer =
+            Ed25519Issuer::from_file(ca.as_bytes().to_vec()).expect("Failed to create issuer");
+
+        let alice_key = Ed25519SignatureKeyPair::from_file(alice.as_bytes().to_vec())
+            .expect("Failed to create Alice's key pair");
+
+        let alice_credential = issuer
+            .issue(alice, alice_key.public_key())
+            .expect("Failed to issue key for Alice");
+
+        assert_eq!(
+            alice_credential.credential,
+            Ed25519credential::from_file(alice.as_bytes().to_vec())
+                .unwrap()
+                .into()
+        );
     }
 
     #[test]
