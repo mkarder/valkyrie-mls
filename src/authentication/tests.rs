@@ -1,9 +1,14 @@
+/*
+ For test identies, use idienties that begin with 'test', as we remove all these files after tests have concluded.
+ If one need to obtain identies, we have saved credentials for Alice and Bob, for those to test with.
+*/
+
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::ed25519::signature::Signer;
+    use glob::glob;
     use openmls::prelude::{Ciphersuite, SignaturePublicKey};
     use openmls_basic_credential::SignatureKeyPair;
-
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -67,7 +72,7 @@ mod tests {
             .expect("Error generating a signature key pair.");
 
         let credential_key_bytes = credential_key.public().to_vec(); // Should be 32 bytes
-        let issuer = b"test-ca".to_vec();
+        let issuer = b"Alice".to_vec();
         let not_after = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -107,11 +112,11 @@ mod tests {
 
     #[test]
     fn load_ed25519_keys_from_file() {
-        let issuer = "test-ca";
-        load_verifying_key_from_file(issuer.as_bytes().to_vec())
-            .expect("Error loading verifying key from test issuer.");
-        load_signing_key_from_file(issuer.as_bytes().to_vec())
-            .expect("Error loading signing key from test issuer.");
+        let subject = "Alice";
+        load_verifying_key_from_file(subject.as_bytes().to_vec())
+            .expect("Error loading verifying key from Alice.");
+        load_signing_key_from_file(subject.as_bytes().to_vec())
+            .expect("Error loading signing key from Alice issuer.");
     }
 
     #[test]
@@ -131,9 +136,6 @@ mod tests {
     }
 
     #[test]
-    fn tls_serialization() {}
-
-    #[test]
     fn ed25519_credential() {
         let signature_algorithm =
             Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519.signature_algorithm();
@@ -142,7 +144,7 @@ mod tests {
         let credential_key = SignatureKeyPair::new(signature_algorithm)
             .expect("Error generating a signature key pair.");
 
-        let issuer = "test-ca";
+        let issuer = "Alice";
         let not_after = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -244,7 +246,7 @@ mod tests {
 
     #[test]
     fn ed25519_issuer_issues_valid_credential() {
-        let issuer_id = "issuer-a";
+        let issuer_id = "test-issuer";
         let issuer = Ed25519Issuer::create_issuer(issuer_id);
 
         let signature_algorithm =
@@ -252,7 +254,7 @@ mod tests {
         let client_keypair = SignatureKeyPair::new(signature_algorithm).unwrap();
         let pub_key = client_keypair.public().to_vec();
 
-        let cred_with_key = issuer.issue("drone-999", &pub_key).unwrap();
+        let cred_with_key = issuer.issue("test-drone", &pub_key).unwrap();
 
         assert_eq!(cred_with_key.signature_key.as_slice(), pub_key.as_slice());
 
@@ -263,22 +265,22 @@ mod tests {
         // std::fs::remove_file(&credential_path).expect("Failed to delete test credential file");
 
         // Load issuer and key from file then issue credential
-        let ca = "test-ca";
-        let alice = "Alice";
+        let ca = "Alice";
+        let subject = "Bob";
 
         let issuer =
             Ed25519Issuer::from_file(ca.as_bytes().to_vec()).expect("Failed to create issuer");
 
-        let alice_key = Ed25519SignatureKeyPair::from_file(alice.as_bytes().to_vec())
-            .expect("Failed to create Alice's key pair");
+        let subject_key = Ed25519SignatureKeyPair::from_file(subject.as_bytes().to_vec())
+            .expect("Failed to create subject's (Bob's) key pair");
 
-        let alice_credential = issuer
-            .issue(alice, alice_key.public_key())
-            .expect("Failed to issue key for Alice");
+        let subject_credential = issuer
+            .issue(subject, subject_key.public_key())
+            .expect("Failed to issue key for subject");
 
         assert_eq!(
-            alice_credential.credential,
-            Ed25519credential::from_file(alice.as_bytes().to_vec())
+            subject_credential.credential,
+            Ed25519credential::from_file(subject.as_bytes().to_vec())
                 .unwrap()
                 .into()
         );
@@ -290,15 +292,41 @@ mod tests {
         let issuer = Ed25519Issuer::create_issuer("test");
 
         let invalid_key = vec![0u8; 31]; // Invalid length (should be 32)
-        issuer.issue("invalid-drone", &invalid_key).unwrap();
+        issuer.issue("test-invalid-drone", &invalid_key).unwrap();
     }
 
     #[test]
     fn ed25519_issuer_sign_and_verify() {
-        let issuer = Ed25519Issuer::create_issuer("self-signed");
+        let issuer = Ed25519Issuer::create_issuer("test-self-signed");
 
         let message = b"important auth message";
         let signature = issuer.sign(message);
         assert!(issuer.verify(message, &signature));
+    }
+
+    fn cleanup_test_files() {
+        let patterns = [
+            format!("{}/credentials/test*.cred", AUTHENTICATION_DIR),
+            format!("{}/keys/test*.pub", AUTHENTICATION_DIR),
+            format!("{}/keys/test*.priv", AUTHENTICATION_DIR),
+        ];
+
+        for pattern in &patterns {
+            for entry in glob(pattern).expect("Failed to read glob pattern") {
+                match entry {
+                    Ok(path) => {
+                        if let Err(e) = fs::remove_file(&path) {
+                            eprintln!("Failed to delete {:?}: {}", path, e);
+                        }
+                    }
+                    Err(e) => eprintln!("Glob error: {}", e),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_cleanup() {
+        cleanup_test_files();
     }
 }

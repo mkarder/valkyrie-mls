@@ -29,5 +29,9 @@ Cargo.lock
 *.ps1
 
 # Authentication - prevent committing secrets
-authentication/keys/
+authentication/keys/*
 authentication/conf/
+
+# EXCEPT test keys for Alice and Bob
+!authentication/keys/Alice*
+!authentication/keys/Bob*
