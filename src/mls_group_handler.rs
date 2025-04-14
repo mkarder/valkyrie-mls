@@ -31,6 +31,8 @@ pub trait MlsSwarmLogic {
 
     fn update_self(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error>;
 
+    fn store_key_package(&mut self, key_package: KeyPackage);
+
     #[allow(dead_code)]
     fn retrieve_ratchet_tree(&self) -> Vec<u8>;
 
@@ -52,10 +54,10 @@ impl MlsEngine {
     pub fn new(config: MlsConfig) -> Self {
         let provider = OpenMlsRustCrypto::default();
         let cipher = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
-        let credential_type: CredentialType = match config.credential_type.to_lowercase().as_str() {
-            "basic" => CredentialType::Basic,
-            "x509" => CredentialType::X509,
-            "ed25519" => CredentialType::Other(0xF000),
+        let (credential_type, capabilities) = match config.credential_type.to_lowercase().as_str() {
+            "basic" => (CredentialType::Basic, capabilities("basic")),
+            "x509" => (CredentialType::X509, capabilities("x509")),
+            "ed25519" => (CredentialType::Other(0xF000), capabilities("ed25519")),
             other => panic!(
                 "Cannot initialize Mls Component. Unsupported credential type: {}",
                 other
@@ -68,14 +70,19 @@ impl MlsEngine {
             &provider,
         );
 
-        let key_package =
-            generate_key_package(cipher, &provider, &signature_key, credential.clone());
+        let key_package = generate_key_package(
+            cipher,
+            &provider,
+            &signature_key,
+            credential.clone(),
+            capabilities.clone(),
+        );
         let group_join_config = generate_group_config();
 
         let group = MlsGroup::new(
             &provider,
             &signature_key,
-            &generate_group_create_config(),
+            &generate_group_create_config(capabilities.clone()),
             credential,
         )
         .expect("Error creating group");
@@ -309,15 +316,60 @@ impl MlsSwarmLogic for MlsEngine {
     fn handle_incoming_key_package(&mut self, key_package_in: KeyPackageIn) {
         log::warn!("TODO: Implement policy for incoming KeyPackage.");
 
-        // TODO: Validate sender. Check credential through Authentication Seervice.
-        let key_package = key_package_in
-            .validate(self.provider.crypto(), ProtocolVersion::Mls10)
-            .expect("Incoming KeyPackage could not be verified");
-        let key_ref = key_package
-            .hash_ref(self.provider.crypto())
-            .expect("Error getting hash_ref from KeyPackage");
-        self.pending_key_packages
-            .insert(key_ref, key_package.clone());
+        match key_package_in
+            .unverified_credential()
+            .credential
+            .credential_type()
+        {
+            CredentialType::Basic => {
+                log::info!(
+                    "Received KeyPackage contained Basic credential. Continuing verifying it...."
+                );
+                let key_package = key_package_in
+                    .validate(self.provider.crypto(), ProtocolVersion::Mls10)
+                    .expect("Incoming KeyPackage could not be verified");
+                self.store_key_package(key_package.clone());
+            }
+            CredentialType::X509 => {
+                log::info!(
+                    "Received KeyPackage contained X509 credential. This is NOT YET SUPPORTED. Continuing verifying it as Basic credential...."
+                );
+                let key_package = key_package_in
+                    .validate(self.provider.crypto(), ProtocolVersion::Mls10)
+                    .expect("Incoming KeyPackage could not be verified");
+                self.store_key_package(key_package.clone());
+            }
+            CredentialType::Other(custom_type) => match custom_type {
+                0xF000 => {
+                    log::info!("Received KeyPackage contained Ed25519 credential. Continuing verifying it....");
+                    let credential = Ed25519credential::try_from(
+                        key_package_in.unverified_credential().credential.clone(),
+                    );
+                    if credential.is_err() {
+                        log::error!("Error valdiating incoming Ed25519 credential.");
+                        return;
+                    }
+                    let credential = credential.unwrap();
+                    match credential.validate(&key_package_in.unverified_credential().signature_key)
+                    {
+                        Ok(_) => log::info!("Ed25519 credential validated successfully."),
+                        Err(e) => {
+                            log::error!("Error validating Ed25519 credential: {:?}", e);
+                            return;
+                        }
+                    }
+
+                    let key_package = key_package_in
+                        .validate(self.provider.crypto(), ProtocolVersion::Mls10)
+                        .expect("Incoming KeyPackage could not be verified");
+                    self.store_key_package(key_package.clone());
+                }
+                _ => {
+                    log::error!("Unsupported credential type: {}", custom_type);
+                    return;
+                }
+            },
+        }
     }
 
     fn add_new_member(&mut self, key_package: KeyPackage) -> (Vec<u8>, Vec<u8>) {
@@ -458,6 +510,14 @@ impl MlsSwarmLogic for MlsEngine {
             .expect("Incoming KeyPackage could not be verified");
         self.add_new_member(key_package)
     }
+
+    fn store_key_package(&mut self, key_package: KeyPackage) {
+        let key_ref = key_package
+            .hash_ref(self.provider.crypto())
+            .expect("Error getting hash_ref from KeyPackage");
+        self.pending_key_packages
+            .insert(key_ref, key_package.clone());
+    }
 }
 
 fn generate_credential_with_key(
@@ -502,7 +562,7 @@ fn generate_credential_with_key(
                 signature_keys,
             )
         }
-        CredentialType::Other(custom) => match custom {
+        CredentialType::Other(custom_type) => match custom_type {
             0xF000 => {
                 log::info!("Generating Ed25519 credential.");
 
@@ -520,7 +580,7 @@ fn generate_credential_with_key(
                 )
             }
             _ => {
-                log::error!("Unsupported credential type: {}", custom);
+                log::error!("Unsupported credential type: {}", custom_type);
                 panic!("Unsupported credential type.");
             }
         },
@@ -532,8 +592,10 @@ fn generate_key_package(
     provider: &impl OpenMlsProvider,
     signer: &SignatureKeyPair,
     credential_with_key: CredentialWithKey,
+    capabilities: Capabilities,
 ) -> KeyPackageBundle {
     KeyPackage::builder()
+        .leaf_node_capabilities(capabilities)
         .build(ciphersuite, provider, signer, credential_with_key)
         .unwrap()
 }
@@ -549,13 +611,41 @@ fn generate_group_config() -> MlsGroupJoinConfig {
         .build()
 }
 
-fn generate_group_create_config() -> MlsGroupCreateConfig {
+fn generate_group_create_config(capabilities: Capabilities) -> MlsGroupCreateConfig {
     MlsGroupCreateConfig::builder()
         .padding_size(0)
         .sender_ratchet_configuration(SenderRatchetConfiguration::new(
             10,   // out_of_order_tolerance
             2000, // maximum_forward_distance
         ))
+        .capabilities(capabilities)
         .use_ratchet_tree_extension(true)
         .build()
+}
+
+fn capabilities(credential_type: &str) -> Capabilities {
+    match credential_type {
+        "basic" => Capabilities::new(
+            None,                           // Defaults to the group's protocol version
+            None,                           // Defaults to the group's ciphersuite
+            None,                           // Defaults to all basic extension types
+            None,                           // Defaults to all basic proposal types
+            Some(&[CredentialType::Basic]), // Basic credential type
+        ),
+        "x509" => Capabilities::new(
+            None,                           // Defaults to the group's protocol version
+            None,                           // Defaults to the group's ciphersuite
+            None,                           // Defaults to all basic extension types
+            None,                           // Defaults to all basic proposal types
+            Some(&[CredentialType::Basic]), // X.509 credential type not supported yet
+        ),
+        "ed25519" => Capabilities::new(
+            None,                                   // Defaults to the group's protocol version
+            None,                                   // Defaults to the group's ciphersuite
+            None,                                   // Defaults to all basic extension types
+            None,                                   // Defaults to all basic proposal types
+            Some(&[CredentialType::Other(0xF000)]), // Ed25519 credential type
+        ),
+        _ => panic!("Unsupported credential type: {}", credential_type),
+    }
 }

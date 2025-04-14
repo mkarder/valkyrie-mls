@@ -257,19 +257,9 @@ fn test_mls_operations_with_ed25519_credential() {
         update_interval_secs: 100,
     };
 
-    let charlie_config = MlsConfig {
-        credential_type: "ed25519".to_string(),
-        node_id: "Charlie".to_string(),
-        update_interval_secs: 100,
-    };
-
-    let alice_provider = &OpenMlsRustCrypto::default();
-    let bob_provider = &OpenMlsRustCrypto::default();
-
     // Generate three MLS Engines
     let mut alice_mls_engine = MlsEngine::new(alice_config);
     let mut bob_mls_engine = MlsEngine::new(bob_config);
-    let mut charlie_mls_engine = MlsEngine::new(charlie_config);
 
     // === Alice receives Bob's key package ===
     let bob_key_package_bytes = bob_mls_engine.get_key_package().unwrap();
@@ -294,7 +284,11 @@ fn test_mls_operations_with_ed25519_credential() {
     );
 
     // === Alice adds Bob ===
-    let (_group_commit, bob_welcome) = alice_mls_engine.add_pending_key_packages().unwrap();
+    let result = alice_mls_engine.add_pending_key_packages();
+    if result.is_err() {
+        panic!("Failed to add pending key packages: {:?}", result.err());
+    }
+    let (_group_commit, bob_welcome) = result.unwrap();
     assert_eq!(
         alice_mls_engine.group().members().count(),
         2,

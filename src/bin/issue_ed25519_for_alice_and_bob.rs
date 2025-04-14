@@ -35,14 +35,15 @@ fn main() {
         .issue(bob, bob_key.public_key())
         .expect("Failed to issue key for Bob");
 
-    println!(
-        "Sucesfully issued Bob's credential: {:?}",
-        bob_credential.credential
-    );
     assert_eq!(
         bob_credential.credential,
         Ed25519credential::from_file(bob.as_bytes().to_vec())
             .unwrap()
             .into()
+    );
+
+    println!(
+        "Sucesfully issued Bob's credential: {:?}",
+        bob_credential.credential
     );
 }
