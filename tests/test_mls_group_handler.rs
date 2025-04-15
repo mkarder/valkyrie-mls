@@ -261,6 +261,8 @@ fn test_mls_operations_with_ed25519_credential() {
     let mut alice_mls_engine = MlsEngine::new(alice_config);
     let mut bob_mls_engine = MlsEngine::new(bob_config);
 
+    
+
     // === Alice receives Bob's key package ===
     let bob_key_package_bytes = bob_mls_engine.get_key_package().unwrap();
     let result = alice_mls_engine
@@ -296,9 +298,16 @@ fn test_mls_operations_with_ed25519_credential() {
     );
 
     // Bob receives the welcome message and joins the group
-    bob_mls_engine
-        .process_incoming_delivery_service_message(&bob_welcome)
-        .unwrap();
+    match bob_mls_engine.process_incoming_delivery_service_message(&bob_welcome) {
+        Ok(_) => {}
+        Err(e) => {
+            panic!(
+                "Failed to process incoming delivery service message: {:?}",
+                e
+            );
+        }
+    }
+
     assert_eq!(
         bob_mls_engine.group().members().count(),
         2,

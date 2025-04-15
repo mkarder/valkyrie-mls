@@ -1,5 +1,5 @@
 use crate::authentication::ed25519::Ed25519SignatureKeyPair;
-use crate::authentication::Ed25519credential;
+use crate::authentication::{self, Ed25519credential};
 use crate::config::MlsConfig;
 use anyhow::{Context, Error};
 use openmls::group::MlsGroup;
@@ -7,7 +7,6 @@ use openmls::prelude::{group_info::VerifiableGroupInfo, *};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use std::collections::HashMap;
-use std::result::Result;
 use tls_codec::{Deserialize, Serialize};
 
 #[allow(dead_code)]
@@ -33,6 +32,12 @@ pub trait MlsSwarmLogic {
 
     fn store_key_package(&mut self, key_package: KeyPackage);
 
+    fn verify_credential(
+        &self,
+        unverified_credential: Credential,
+        attached_key: Option<&SignaturePublicKey>,
+    ) -> Result<(), Error>;
+
     #[allow(dead_code)]
     fn retrieve_ratchet_tree(&self) -> Vec<u8>;
 
@@ -43,10 +48,10 @@ pub trait MlsSwarmLogic {
     ) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error>;
     fn process_outgoing_application_message(&mut self, message: &[u8]) -> Result<Vec<u8>, Error>;
 
-    fn handle_incoming_welcome(&mut self, welcome: Welcome);
+    fn handle_incoming_welcome(&mut self, welcome: Welcome) -> Result<(), Error>;
     fn handle_incoming_group_info(&mut self, group_info: VerifiableGroupInfo);
     fn handle_incoming_key_package(&mut self, key_package_in: KeyPackageIn);
-    fn handle_incoming_commit(&mut self, commit: StagedCommit);
+    fn handle_incoming_commit(&mut self, commit: StagedCommit) -> Result<(), Error>;
 }
 
 #[allow(dead_code)]
@@ -213,22 +218,39 @@ impl MlsSwarmLogic for MlsEngine {
 
         let message_in =
             MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
+
         match message_in.extract() {
             MlsMessageBodyIn::PublicMessage(msg) => {
                 let processed_message = self
                     .group
                     .process_message(&self.provider, msg)
                     .expect("Error processing message");
+
+                // Validate sender's Credential
+                match self.verify_credential(processed_message.credential().clone(), None) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        log::error!("Error verifying sender's credential: {:?}", e);
+                        return Err(e);
+                    }
+                }
+
                 match processed_message.into_content() {
                     ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
-                        // TODO: Apply authentication for incoming commits.
-                        let _ = self
-                            .group
-                            .merge_staged_commit(&self.provider, *staged_commit)
-                            .context("Error handling staged commit.");
+                        log::warn!(
+                            "Received PublicMessage containing StagedCommitMessage. Should be sent as PrivateMessage.",
+                        );
+                        match self.handle_incoming_commit(*staged_commit) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                log::error!("Error handling incoming commit: {:?}", e);
+                            }
+                        }
                     }
                     ProcessedMessageContent::ProposalMessage(proposal) => {
-                        // TODO: Apply authentication for incoming proposals.
+                        log::warn!(
+                            "Received PublicMessage containing Proposal. Should be sent as PrivateMessage.",
+                        );
                         let _ = self
                             .group
                             .store_pending_proposal(self.provider.storage(), *proposal.clone())
@@ -247,7 +269,6 @@ impl MlsSwarmLogic for MlsEngine {
             }
 
             MlsMessageBodyIn::PrivateMessage(msg) => {
-                //let processed_message = self.group.process_message(&self.provider, msg).expect("Error processing message"); Panicked here, which stopped the program
                 let processed_message =
                     self.group
                         .process_message(&self.provider, msg)
@@ -256,9 +277,23 @@ impl MlsSwarmLogic for MlsEngine {
                             Error::msg("Error processing message.")
                         })?;
 
+                // Validate sender's Credential
+                match self.verify_credential(processed_message.credential().clone(), None) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        log::error!("Error verifying sender's credential: {:?}", e);
+                        return Err(e);
+                    }
+                }
+
                 match processed_message.into_content() {
                     ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
-                        self.handle_incoming_commit(*staged_commit);
+                        match self.handle_incoming_commit(*staged_commit) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                log::error!("Error handling incoming commit: {:?}", e);
+                            }
+                        }
                     }
                     ProcessedMessageContent::ProposalMessage(proposal) => {
                         let _ = self
@@ -277,10 +312,10 @@ impl MlsSwarmLogic for MlsEngine {
                 }
                 Ok(None)
             }
-            MlsMessageBodyIn::Welcome(welcome) => {
-                self.handle_incoming_welcome(welcome);
-                Ok(None)
-            }
+            MlsMessageBodyIn::Welcome(welcome) => match self.handle_incoming_welcome(welcome) {
+                Ok(_) => Ok(None),
+                Err(e) => Err(e),
+            },
             MlsMessageBodyIn::GroupInfo(group_info) => {
                 self.handle_incoming_group_info(group_info);
                 Ok(None)
@@ -292,8 +327,7 @@ impl MlsSwarmLogic for MlsEngine {
         }
     }
 
-    fn handle_incoming_welcome(&mut self, welcome: Welcome) {
-        log::warn!("TODO: Verify welcome message before joining group.");
+    fn handle_incoming_welcome(&mut self, welcome: Welcome) -> Result<(), Error> {
         log::debug!(
             "Node {:?} received Welcome message: {:?}",
             self.config.node_id,
@@ -306,17 +340,34 @@ impl MlsSwarmLogic for MlsEngine {
             None,
         ) {
             Ok(staged_join) => {
+                let sender_index = staged_join.welcome_sender_index();
                 let group = staged_join
                     .into_group(&self.provider)
                     .expect("Error joining group from StagedWelcome");
                 log::info!("Joined group with ID: {:?}", group.group_id().as_slice());
+
+                let sender = group.member(sender_index);
+                if sender.is_none() {
+                    log::error!("Sender not found in group.");
+                    return Err(Error::msg("Sender not found in group."));
+                }
+                match self.verify_credential(sender.unwrap().clone(), None) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        log::error!("Error verifying sender's credential: {:?}", e);
+                        return Err(e);
+                    }
+                }
+
                 self.group = group;
+                Ok(())
             }
             Err(e) => {
                 log::error!("Error constructing staged join: {:?}", e);
-                return;
+                Err(e)
             }
         };
+        Ok(())
     }
 
     fn handle_incoming_group_info(&mut self, _group_info: VerifiableGroupInfo) {
@@ -324,61 +375,19 @@ impl MlsSwarmLogic for MlsEngine {
     }
 
     fn handle_incoming_key_package(&mut self, key_package_in: KeyPackageIn) {
-        log::warn!("TODO: Implement policy for incoming KeyPackage.");
-
-        match key_package_in
-            .unverified_credential()
-            .credential
-            .credential_type()
-        {
-            CredentialType::Basic => {
-                log::info!(
-                    "Received KeyPackage contained Basic credential. Continuing verifying it...."
-                );
+        log::info!("Received KeyPackage message. Verifying and storing it.");
+        match self.verify_credential(
+            key_package_in.unverified_credential().credential,
+            Some(&key_package_in.unverified_credential().signature_key),
+        ) {
+            Ok(_) => {
+                log::info!("Credential verified successfully.");
                 let key_package = key_package_in
                     .validate(self.provider.crypto(), ProtocolVersion::Mls10)
-                    .expect("Incoming KeyPackage could not be verified");
+                    .expect("Error validating KeyPackage");
                 self.store_key_package(key_package.clone());
             }
-            CredentialType::X509 => {
-                log::info!(
-                    "Received KeyPackage contained X509 credential. This is NOT YET SUPPORTED. Continuing verifying it as Basic credential...."
-                );
-                let key_package = key_package_in
-                    .validate(self.provider.crypto(), ProtocolVersion::Mls10)
-                    .expect("Incoming KeyPackage could not be verified");
-                self.store_key_package(key_package.clone());
-            }
-            CredentialType::Other(custom_type) => match custom_type {
-                0xF000 => {
-                    log::info!("Received KeyPackage contained Ed25519 credential. Continuing verifying it....");
-                    let credential = Ed25519credential::try_from(
-                        key_package_in.unverified_credential().credential.clone(),
-                    );
-                    if credential.is_err() {
-                        log::error!("Error valdiating incoming Ed25519 credential.");
-                        return;
-                    }
-                    let credential = credential.unwrap();
-                    match credential.validate(&key_package_in.unverified_credential().signature_key)
-                    {
-                        Ok(_) => log::info!("Ed25519 credential validated successfully."),
-                        Err(e) => {
-                            log::error!("Error validating Ed25519 credential: {:?}", e);
-                            return;
-                        }
-                    }
-
-                    let key_package = key_package_in
-                        .validate(self.provider.crypto(), ProtocolVersion::Mls10)
-                        .expect("Incoming KeyPackage could not be verified");
-                    self.store_key_package(key_package.clone());
-                }
-                _ => {
-                    log::error!("Unsupported credential type: {}", custom_type);
-                    return;
-                }
-            },
+            Err(e) => log::error!("Error verifying credential: {:?}", e),
         }
     }
 
@@ -434,9 +443,10 @@ impl MlsSwarmLogic for MlsEngine {
         Ok((group_commit_out, welcome_out))
     }
 
-    fn handle_incoming_commit(&mut self, commit: StagedCommit) {
+    fn handle_incoming_commit(&mut self, commit: StagedCommit) -> Result<(), Error> {
         for add in commit.add_proposals() {
             let key_package = add.add_proposal().key_package().clone();
+
             let key_ref = key_package
                 .hash_ref(self.provider.crypto())
                 .expect("Error getting hash_ref from KeyPackage");
@@ -446,10 +456,21 @@ impl MlsSwarmLogic for MlsEngine {
             }
         }
 
+        for unverified_credential in commit.credentials_to_verify() {
+            match self.verify_credential(unverified_credential.clone(), None) {
+                Ok(_) => {}
+                Err(e) => {
+                    log::error!("Error verifying credential: {:?}", e);
+                    return Err(e);
+                }
+            }
+        }
+
         let _ = self
             .group
             .merge_staged_commit(&self.provider, commit)
             .expect("Error handling staged commit.");
+        Ok(())
     }
 
     fn remove_member(&mut self, leaf_node: LeafNodeIndex) -> (Vec<u8>, Option<Vec<u8>>) {
@@ -539,6 +560,42 @@ impl MlsSwarmLogic for MlsEngine {
             .expect("Error getting hash_ref from KeyPackage");
         self.pending_key_packages
             .insert(key_ref, key_package.clone());
+    }
+
+    fn verify_credential(
+        &self,
+        unverified_credential: Credential,
+        attached_key: Option<&SignaturePublicKey>,
+    ) -> Result<(), Error> {
+        log::info!("Verifying incoming Credential!");
+        match unverified_credential.credential_type() {
+            CredentialType::Basic => {
+                log::info!("Received Basic credential. Continuing...");
+                Ok(())
+            }
+            CredentialType::X509 => {
+                log::info!(
+                    "Received X509 credential. This is NOT YET SUPPORTED. Continuing verifying it as Basic credential....");
+                Ok(())
+            }
+            CredentialType::Other(custom_type) => match custom_type {
+                0xF000 => {
+                    log::info!("Received Ed25519 credential. Validating...");
+                    let credential = Ed25519credential::try_from(unverified_credential.clone());
+                    if credential.is_err() {
+                        log::error!("Error converting openmls::credentials::Credential to valkyire-mls::Ed25519credential.");
+                        return Err(Error::msg("converting openmls::credentials::Credential to valkyire-mls::Ed25519credential."));
+                    }
+                    let credential = credential.unwrap();
+                    credential
+                        .validate(attached_key)
+                        .map_err(authentication::CredentialError::from)?;
+                    Ok(())
+                }
+
+                _ => Err(Error::msg("Received unsupported credential type!")),
+            },
+        }
     }
 }
 
