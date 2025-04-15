@@ -1,7 +1,7 @@
 # ---------------------------------------------------------
 # Stage 1: Build the Rust application
 # ---------------------------------------------------------
-FROM ubuntu:18.04 AS builder
+FROM ubuntu:20.04 AS builder
 
 # Set environment variables for non-interactive installations
 ENV DEBIAN_FRONTEND=noninteractive
@@ -32,6 +32,7 @@ WORKDIR /app
 # Copy your Rust files (Cargo.toml, Cargo.lock, src/)
 COPY ../Cargo.toml .
 COPY ../src ./src
+COPY ../authentication ./authentication
 
 # Build in release mode (adjust if you use debug mode or other profiles)
 RUN cargo build
@@ -70,6 +71,9 @@ COPY ./corosync.conf /etc/corosync/corosync.conf.template
 
 # Copy config files 
 COPY ./config.toml /root/valkyrie-mls/config.toml
+
+# Copy the authentication files
+COPY ./authentication/ /root/valkyrie-mls/authentication
 
 # Replace placeholders in the Corosync config
 RUN sed "s/{{NODE_IP}}/$NODE_IP/" /etc/corosync/corosync.conf.template > /etc/corosync/corosync.conf
