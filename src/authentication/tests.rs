@@ -224,7 +224,19 @@ mod tests {
             "Expired credential should fail validation"
         );
 
-        // Clean up the test file
+        // Invalid Issuer
+        let invalid_issuer = "Bob";
+        let invalid_credential = Ed25519credential::new(Ed25519CredentialData {
+            identity: identity.as_bytes().to_vec(),
+            credential_key_bytes: credential_key.public().to_vec(),
+            signature_bytes: signature.to_bytes().to_vec(),
+            issuer: invalid_issuer.as_bytes().to_vec(),
+            not_after,
+        });
+        assert!(
+            invalid_credential.validate(&signature_pub_key).is_err(),
+            "Invalid issuer should fail validation"
+        );
     }
 
     #[test]
