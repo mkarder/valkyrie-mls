@@ -33,6 +33,7 @@ authentication/keys/*
 authentication/conf/
 authentication/credentials/*
 
+
 # EXCEPT test keys and credentials for Alice and Bob
 !authentication/keys/Alice*
 !authentication/keys/Bob*
