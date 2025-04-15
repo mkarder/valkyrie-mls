@@ -3,6 +3,10 @@ name = "valkyrie-mls"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "issue_ed25519_credential"
+path = "src/bin/issue_ed25519_credential.rs"
+
 [dependencies]
 openmls = "0.6.0"
 openmls_rust_crypto = "0.3.0"

@@ -75,10 +75,13 @@ impl Ed25519credential {
 
     pub fn validate(
         &self,
-        expected_signature_key: &SignaturePublicKey,
+        attached_key: Option<&SignaturePublicKey>,
     ) -> Result<(), CredentialError> {
-        if self.credential_data.credential_key_bytes != expected_signature_key.as_slice() {
-            return Err(CredentialError::InvalidSignatureKey);
+        if attached_key.is_some() {
+            // Used to ensure that CredentialWithKey contains same key as credential itself
+            if self.credential_data.credential_key_bytes != attached_key.unwrap().as_slice() {
+                return Err(CredentialError::InvalidSignatureKey);
+            }
         }
 
         let message = generate_signing_message(
@@ -296,8 +299,8 @@ fn credential_file_path(identity: &str) -> PathBuf {
 pub fn load_verifying_key_from_file(
     identity_bytes: Vec<u8>,
 ) -> Result<VerifyingKey, CredentialError> {
-    let identity =
-        String::from_utf8(identity_bytes).map_err(|_| CredentialError::IssuerEncodingError)?;
+    let identity = String::from_utf8(identity_bytes.clone())
+        .map_err(|_| CredentialError::IssuerEncodingError)?;
     let path = key_file_path(&identity, "pub");
 
     if path.exists() {

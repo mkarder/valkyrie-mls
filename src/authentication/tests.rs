@@ -186,7 +186,7 @@ mod tests {
         let signature_pub_key = SignaturePublicKey::from(credential_key.public().to_vec());
 
         assert!(
-            credential.validate(&signature_pub_key).is_ok(),
+            credential.validate(Some(&signature_pub_key)).is_ok(),
             "Credential validation failed"
         );
 
@@ -201,7 +201,9 @@ mod tests {
             not_after,
         });
         assert!(
-            invalid_credential.validate(&signature_pub_key).is_err(),
+            invalid_credential
+                .validate(Some(&signature_pub_key))
+                .is_err(),
             "Invalid signature should fail validation"
         );
 
@@ -220,11 +222,27 @@ mod tests {
             not_after: expired_not_after,
         });
         assert!(
-            expired_credential.validate(&signature_pub_key).is_err(),
+            expired_credential
+                .validate(Some(&signature_pub_key))
+                .is_err(),
             "Expired credential should fail validation"
         );
 
-        // Clean up the test file
+        // Invalid Issuer
+        let invalid_issuer = "Bob";
+        let invalid_credential = Ed25519credential::new(Ed25519CredentialData {
+            identity: identity.as_bytes().to_vec(),
+            credential_key_bytes: credential_key.public().to_vec(),
+            signature_bytes: signature.to_bytes().to_vec(),
+            issuer: invalid_issuer.as_bytes().to_vec(),
+            not_after,
+        });
+        assert!(
+            invalid_credential
+                .validate(Some(&signature_pub_key))
+                .is_err(),
+            "Invalid issuer should fail validation"
+        );
     }
 
     #[test]
@@ -238,7 +256,7 @@ mod tests {
         let valid_cred = Ed25519credential::new(valid_cred_data);
 
         assert!(
-            valid_cred.validate(&wrong_pub_key).is_err(),
+            valid_cred.validate(Some(&wrong_pub_key)).is_err(),
             "Validation should fail with incorrect signature key"
         );
     }
@@ -258,7 +276,9 @@ mod tests {
         assert_eq!(cred_with_key.signature_key.as_slice(), pub_key.as_slice());
 
         let parsed_cred = Ed25519credential::try_from(cred_with_key.credential.clone()).unwrap();
-        parsed_cred.validate(&cred_with_key.signature_key).unwrap();
+        parsed_cred
+            .validate(Some(&cred_with_key.signature_key))
+            .unwrap();
 
         // Clean up the test file
         // std::fs::remove_file(&credential_path).expect("Failed to delete test credential file");

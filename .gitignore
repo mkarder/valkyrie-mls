@@ -31,10 +31,11 @@ Cargo.lock
 # Authentication - prevent committing secrets
 authentication/keys/*
 authentication/conf/
-authentication/creddentials/*
+authentication/credentials/*
 
-# EXCEPT test keys for Alice and Bob
+
+# EXCEPT test keys and credentials for Alice and Bob
 !authentication/keys/Alice*
 !authentication/keys/Bob*
-!authentication/creddentials/Alice*
-!authentication/creddentials/Bob*
+!authentication/credentials/Alice*
+!authentication/credentials/Bob*
