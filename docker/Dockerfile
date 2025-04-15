@@ -39,7 +39,7 @@ RUN cargo build
 # ---------------------------------------------------------
 # Stage 2: Final runtime environment
 # ---------------------------------------------------------
-FROM ubuntu:18.04
+FROM ubuntu:20.04
 
 # Set environment variables for non-interactive installations
 ENV DEBIAN_FRONTEND=noninteractive
