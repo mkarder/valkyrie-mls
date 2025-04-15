@@ -39,3 +39,7 @@ authentication/credentials/*
 !authentication/keys/Bob*
 !authentication/credentials/Alice*
 !authentication/credentials/Bob*
+
+# Local IDE settings
+.idea/
+.vscode/
