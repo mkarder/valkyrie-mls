@@ -22,7 +22,7 @@ tmux split-window -v -t $SESSION     # pane 2 (bottom left)
 tmux select-pane -t $SESSION:0.1
 tmux split-window -v -t $SESSION     # pane 3 (bottom right)
 
-# Build and run Rust app in each container
+# Build and run Rust app in .each container
 tmux send-keys -t $SESSION:0.0 'docker exec --privileged -it node2 bash' C-m
 tmux send-keys -t $SESSION:0.0 'cd /root/valkyrie-mls && ./valkyrie-mls' C-m
 
