@@ -1,7 +1,7 @@
 # ---------------------------------------------------------
 # Stage 1: Build the Rust application
 # ---------------------------------------------------------
-FROM ubuntu:18.04 AS builder
+FROM ubuntu:20.04 AS builder
 
 # Set environment variables for non-interactive installations
 ENV DEBIAN_FRONTEND=noninteractive
@@ -9,6 +9,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install build dependencies for Rust and any additional tools needed at build-time
 RUN apt-get update && apt-get install -y \
     build-essential \
+    pkg-config \
+    libssl-dev \ 
     git \
     wget \
     curl \
