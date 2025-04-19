@@ -223,7 +223,7 @@ impl Router {
                                     corosync::send_message(&self.corosync_handle, welcome.as_slice())
                                         .expect("Failed to send message through Corosync");
                                 }
-                                Err(e) => return Err(e.into()), // Or handle other errors
+                                Err(e) => {}, // Or handle other errors
                             }
                         }
                         Ok(Command::Remove{index}) => {
