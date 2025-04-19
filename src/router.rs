@@ -18,7 +18,7 @@ use tokio::time::Duration;
 
 use tokio::{select, signal};
 
-const MLS_MSG_BUFFER_SIZE: usize = 4096;
+const MLS_MSG_BUFFER_SIZE: usize = 16384; // 16KB
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
