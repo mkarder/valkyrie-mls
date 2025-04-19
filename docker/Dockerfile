@@ -62,6 +62,7 @@ RUN apt-get update && apt-get install -y \
     iproute2 \
     iperf \
     iperf3 \
+    mgen \
     corosync \
     nano \
     sudo \ 
@@ -72,6 +73,9 @@ COPY ./corosync.conf /etc/corosync/corosync.conf.template
 
 # Copy config files 
 COPY ./config.toml /root/valkyrie-mls/config.toml
+
+# Copy the MGEN config file
+COPY ./test.mgn /root/valkyrie-mls/test.mgn
 
 # Replace placeholders in the Corosync config
 RUN sed "s/{{NODE_IP}}/$NODE_IP/" /etc/corosync/corosync.conf.template > /etc/corosync/corosync.conf
