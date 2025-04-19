@@ -133,8 +133,17 @@ impl MlsEngine {
 
 impl MlsSwarmLogic for MlsEngine {
     fn process_incoming_network_message(&mut self, mut buf: &[u8]) -> Result<Vec<u8>, Error> {
+        /*
         let message_in =
             MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
+ */
+        let message_in = MlsMessageIn::tls_deserialize(&mut buf)
+            .map_err(|e| {
+                log::error!("Error processing message: {:?}", e);
+                Error::msg("Error processing message.")
+            })?;
+
+
         match message_in.extract() {
             MlsMessageBodyIn::PublicMessage(msg) => {
                 let processed_message = self
