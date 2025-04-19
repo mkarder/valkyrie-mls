@@ -35,7 +35,6 @@ WORKDIR /app
 COPY ../Cargo.toml .
 COPY ../src ./src
 
-# Build in release mode (adjust if you use debug mode or other profiles)
 RUN cargo build
 
 # ---------------------------------------------------------
