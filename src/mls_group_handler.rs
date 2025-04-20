@@ -336,48 +336,45 @@ impl MlsSwarmLogic for MlsEngine {
         }
     }
 
-    fn handle_incoming_welcome(&mut self, welcome: Welcome) -> Result<(), Error> {
+
+     fn handle_incoming_welcome(&mut self, welcome: Welcome) -> Result<(), Error> {
         log::debug!(
-            "Node {:?} received Welcome message: {:?}",
-            self.config.node_id,
-            welcome
+            "Node {:?} received Welcome message",
+            self.config.node_id
         );
-        let _ = match StagedWelcome::new_from_welcome(
+    
+        let staged_join = StagedWelcome::new_from_welcome(
             &self.provider,
             &self.group_join_config,
             welcome,
             None,
-        ) {
-            Ok(staged_join) => {
-                let sender_index = staged_join.welcome_sender_index();
-                let group = staged_join
-                    .into_group(&self.provider)
-                    .expect("Error joining group from StagedWelcome");
-                log::info!("Joined group with ID: {:?}", group.group_id().as_slice());
-
-                let sender = group.member(sender_index);
-                if sender.is_none() {
-                    log::error!("Sender not found in group.");
-                    return Err(Error::msg("Sender not found in group."));
-                }
-                match self.verify_credential(sender.unwrap().clone(), None) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        log::error!("Error verifying sender's credential: {:?}", e);
-                        return Err(e);
-                    }
-                }
-
-                self.group = group;
-                Ok(())
-            }
-            Err(e) => {
-                log::error!("Error constructing staged join: {:?}", e);
-                Err(e)
-            }
-        };
+        ).map_err(|e| {
+            log::error!("Error constructing staged join: {:?}", e);
+            e
+        })?;
+    
+        let sender_index = staged_join.welcome_sender_index();
+        let group = staged_join.into_group(&self.provider).map_err(|e| {
+            log::error!("Error joining group from StagedWelcome: {:?}", e);
+            Error::msg("Failed to convert staged join into group")
+        })?;
+    
+        log::info!("Joined group with ID: {:?}", group.group_id().as_slice());
+    
+        let sender = group.member(sender_index).ok_or_else(|| {
+            log::error!("Sender not found in group.");
+            Error::msg("Sender not found in group.")
+        })?;
+    
+        self.verify_credential(sender.clone(), None).map_err(|e| {
+            log::error!("Error verifying sender's credential: {:?}", e);
+            e
+        })?;
+    
+        self.group = group;
         Ok(())
     }
+    
 
     fn handle_incoming_group_info(&mut self, _group_info: VerifiableGroupInfo) {
         log::warn!("Received GroupInfo message. No action taken. GroupInfo implies the use of external joins, which it not supported.");
