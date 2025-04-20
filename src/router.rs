@@ -264,11 +264,12 @@ impl Router {
                             let key_package = self.mls_group_handler.get_key_package();
                             match key_package {
                                 Ok(key_package) => {
+                                    log::info!("Broadcasting key package to network");
                                     corosync::send_message(&self.corosync_handle, key_package.as_slice())
                                       .expect("Failed to send message through Corosync");
                                 }
                                 Err(e) => {
-                                    log::error!("Error getting key package: {}", e);
+                                    log::error!("Error broadcasting key package: {}", e);
                                 }
                             }
                         }
