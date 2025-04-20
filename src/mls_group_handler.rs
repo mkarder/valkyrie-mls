@@ -19,6 +19,7 @@ pub struct MlsEngine {
     key_package: KeyPackageBundle,
     pending_key_packages: HashMap<KeyPackageRef, KeyPackage>,
     update_interval_secs: u64,
+    credential_with_key: CredentialWithKey,
 }
 
 pub trait MlsSwarmLogic {
@@ -68,7 +69,7 @@ impl MlsEngine {
                 other
             ),
         };
-        let (credential, signature_key) = generate_credential_with_key(
+        let (credential_with_key, signature_key) = generate_credential_with_key(
             config.node_id.clone().into_bytes(),
             credential_type,
             cipher.signature_algorithm(),
@@ -79,7 +80,7 @@ impl MlsEngine {
             cipher,
             &provider,
             &signature_key,
-            credential.clone(),
+            credential_with_key.clone(),
             capabilities.clone(),
         );
         let group_join_config = generate_group_config();
@@ -88,7 +89,7 @@ impl MlsEngine {
             &provider,
             &signature_key,
             &generate_group_create_config(capabilities.clone()),
-            credential,
+            credential_with_key.clone(),
         )
         .expect("Error creating group");
 
@@ -103,6 +104,7 @@ impl MlsEngine {
             key_package,
             pending_key_packages: HashMap::new(),
             update_interval_secs,
+            credential_with_key,
         }
     }
 
