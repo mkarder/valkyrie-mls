@@ -385,7 +385,7 @@ impl MlsSwarmLogic for MlsEngine {
             log::error!("Error verifying sender's credential: {:?}", e);
             e
         })?;
-    
+
     
         self.group = group;
 
