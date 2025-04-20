@@ -20,6 +20,7 @@ pub struct MlsEngine {
     pending_key_packages: HashMap<KeyPackageRef, KeyPackage>,
     update_interval_secs: u64,
     credential_with_key: CredentialWithKey,
+    capabilities: Capabilities,
 }
 
 pub trait MlsSwarmLogic {
@@ -105,6 +106,7 @@ impl MlsEngine {
             pending_key_packages: HashMap::new(),
             update_interval_secs,
             credential_with_key,
+            capabilities,
         }
     }
 
@@ -118,6 +120,17 @@ impl MlsEngine {
         key_package
             .tls_serialize_detached()
             .context("Error serializing key package")
+    }
+
+    pub fn refresh_key_package(&mut self) -> Result<(), Error> {
+        self.key_package = generate_key_package(
+            self.group.ciphersuite(),
+            &self.provider,
+            &self.signature_key,
+            self.credential_with_key.clone(),
+            self.capabilities.clone(),
+        );
+        Ok(())
     }
 
     pub fn pending_key_packages(&self) -> &HashMap<KeyPackageRef, KeyPackage> {
@@ -373,7 +386,11 @@ impl MlsSwarmLogic for MlsEngine {
             e
         })?;
     
+    
         self.group = group;
+
+        self.refresh_key_package()?;
+
         Ok(())
     }
     
