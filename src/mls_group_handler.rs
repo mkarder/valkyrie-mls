@@ -19,6 +19,8 @@ pub struct MlsEngine {
     key_package: KeyPackageBundle,
     pending_key_packages: HashMap<KeyPackageRef, KeyPackage>,
     update_interval_secs: u64,
+    credential_with_key: CredentialWithKey,
+    capabilities: Capabilities,
 }
 
 pub trait MlsSwarmLogic {
@@ -68,7 +70,7 @@ impl MlsEngine {
                 other
             ),
         };
-        let (credential, signature_key) = generate_credential_with_key(
+        let (credential_with_key, signature_key) = generate_credential_with_key(
             config.node_id.clone().into_bytes(),
             credential_type,
             cipher.signature_algorithm(),
@@ -79,7 +81,7 @@ impl MlsEngine {
             cipher,
             &provider,
             &signature_key,
-            credential.clone(),
+            credential_with_key.clone(),
             capabilities.clone(),
         );
         let group_join_config = generate_group_config();
@@ -88,7 +90,7 @@ impl MlsEngine {
             &provider,
             &signature_key,
             &generate_group_create_config(capabilities.clone()),
-            credential,
+            credential_with_key.clone(),
         )
         .expect("Error creating group");
 
@@ -103,6 +105,8 @@ impl MlsEngine {
             key_package,
             pending_key_packages: HashMap::new(),
             update_interval_secs,
+            credential_with_key,
+            capabilities,
         }
     }
 
@@ -116,6 +120,17 @@ impl MlsEngine {
         key_package
             .tls_serialize_detached()
             .context("Error serializing key package")
+    }
+
+    pub fn refresh_key_package(&mut self) -> Result<(), Error> {
+        self.key_package = generate_key_package(
+            self.group.ciphersuite(),
+            &self.provider,
+            &self.signature_key,
+            self.credential_with_key.clone(),
+            self.capabilities.clone(),
+        );
+        Ok(())
     }
 
     pub fn pending_key_packages(&self) -> &HashMap<KeyPackageRef, KeyPackage> {
@@ -133,8 +148,17 @@ impl MlsEngine {
 
 impl MlsSwarmLogic for MlsEngine {
     fn process_incoming_network_message(&mut self, mut buf: &[u8]) -> Result<Vec<u8>, Error> {
+        /*
         let message_in =
             MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
+ */
+        let message_in = MlsMessageIn::tls_deserialize(&mut buf)
+            .map_err(|e| {
+                log::error!("Error processing message: {:?}", e);
+                Error::msg("Error processing message.")
+            })?;
+
+
         match message_in.extract() {
             MlsMessageBodyIn::PublicMessage(msg) => {
                 let processed_message = self
@@ -327,48 +351,49 @@ impl MlsSwarmLogic for MlsEngine {
         }
     }
 
-    fn handle_incoming_welcome(&mut self, welcome: Welcome) -> Result<(), Error> {
+
+     fn handle_incoming_welcome(&mut self, welcome: Welcome) -> Result<(), Error> {
         log::debug!(
-            "Node {:?} received Welcome message: {:?}",
-            self.config.node_id,
-            welcome
+            "Node {:?} received Welcome message",
+            self.config.node_id
         );
-        let _ = match StagedWelcome::new_from_welcome(
+    
+        let staged_join = StagedWelcome::new_from_welcome(
             &self.provider,
             &self.group_join_config,
             welcome,
             None,
-        ) {
-            Ok(staged_join) => {
-                let sender_index = staged_join.welcome_sender_index();
-                let group = staged_join
-                    .into_group(&self.provider)
-                    .expect("Error joining group from StagedWelcome");
-                log::info!("Joined group with ID: {:?}", group.group_id().as_slice());
+        ).map_err(|e| {
+            log::error!("Error constructing staged join: {:?}", e);
+            e
+        })?;
+    
+        let sender_index = staged_join.welcome_sender_index();
+        let group = staged_join.into_group(&self.provider).map_err(|e| {
+            log::error!("Error joining group from StagedWelcome: {:?}", e);
+            Error::msg("Failed to convert staged join into group")
+        })?;
+    
+        log::info!("Joined group with ID: {:?}", group.group_id().as_slice());
+    
+        let sender = group.member(sender_index).ok_or_else(|| {
+            log::error!("Sender not found in group.");
+            Error::msg("Sender not found in group.")
+        })?;
+    
+        self.verify_credential(sender.clone(), None).map_err(|e| {
+            log::error!("Error verifying sender's credential: {:?}", e);
+            e
+        })?;
 
-                let sender = group.member(sender_index);
-                if sender.is_none() {
-                    log::error!("Sender not found in group.");
-                    return Err(Error::msg("Sender not found in group."));
-                }
-                match self.verify_credential(sender.unwrap().clone(), None) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        log::error!("Error verifying sender's credential: {:?}", e);
-                        return Err(e);
-                    }
-                }
+    
+        self.group = group;
 
-                self.group = group;
-                Ok(())
-            }
-            Err(e) => {
-                log::error!("Error constructing staged join: {:?}", e);
-                Err(e)
-            }
-        };
+        self.refresh_key_package()?;
+
         Ok(())
     }
+    
 
     fn handle_incoming_group_info(&mut self, _group_info: VerifiableGroupInfo) {
         log::warn!("Received GroupInfo message. No action taken. GroupInfo implies the use of external joins, which it not supported.");
