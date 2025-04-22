@@ -1,19 +1,19 @@
 use crate::mls_group_handler::MlsSwarmLogic;
 
-use crate::{corosync, mls_group_handler::MlsEngine};
+use crate::config::RouterConfig;
 use crate::corosync::receive_message;
+use crate::{corosync, mls_group_handler::MlsEngine};
 use anyhow::{Context, Error, Result};
 use once_cell::sync::OnceCell;
 use openmls::prelude::LeafNodeIndex;
 use rust_corosync::cpg::Handle;
+use std::env;
+use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::result::Result::Ok;
 use std::thread;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
-use crate::config::RouterConfig;
-use std::env;
-use std::net::Ipv4Addr;
 use tokio::time::Duration;
 
 use tokio::{select, signal};
@@ -110,12 +110,12 @@ pub struct Router {
 }
 
 impl Router {
-    pub fn new(mls_group_handler: MlsEngine, config: RouterConfig ) -> Self {
+    pub fn new(mls_group_handler: MlsEngine, config: RouterConfig) -> Self {
         let handle = corosync::initialize();
         Self {
             mls_group_handler,
             corosync_handle: handle,
-            config
+            config,
         }
     }
 
@@ -124,42 +124,55 @@ impl Router {
         let rx_cmd_socket = UdpSocket::bind(self.config.rx_cmd_sock_addr.clone())
             .await
             .context("Failed to bind Command RX socket")?;
-        log::info!("Listening for Command messages on {}", self.config.rx_cmd_sock_addr);  
-      
+        log::info!(
+            "Listening for Command messages on {}",
+            self.config.rx_cmd_sock_addr
+        );
 
         //Application UDP Sockets (Send and receive from application)
         let rx_app_socket = UdpSocket::bind(self.config.rx_app_sock_addr.clone())
             .await
             .context("Failed to bind Application RX socket")?;
-        log::info!("Listening for AppData coming from Application on {}", self.config.rx_app_sock_addr);
+        log::info!(
+            "Listening for AppData coming from Application on {}",
+            self.config.rx_app_sock_addr
+        );
 
         let tx_app_socket = UdpSocket::bind("0.0.0.0:0")
             .await
             .context("Failed to bind Application TX socket")?;
-
-        
 
         //Radio Network Multicast Sockets (Send and receive from radio network)
         // Get interface IP from env
         let node_ip_str = env::var("NODE_IP").context("NODE_IP not set")?;
         let node_ip: Ipv4Addr = node_ip_str.parse().context("Invalid NODE_IP format")?;
 
-
-        let rx_network_socket = UdpSocket::bind(format!("{}:{}", self.config.multicast_ip, self.config.multicast_port))
-            .await
-            .context("Failed to bind Multicast RX socket")?;
+        let rx_network_socket = UdpSocket::bind(format!(
+            "{}:{}",
+            self.config.multicast_ip, self.config.multicast_port
+        ))
+        .await
+        .context("Failed to bind Multicast RX socket")?;
         rx_network_socket
-            .join_multicast_v4(self.config.multicast_ip.parse()?, node_ip) //Try with your own ip address as interface, 10.10.0.x 
+            .join_multicast_v4(self.config.multicast_ip.parse()?, node_ip) //Try with your own ip address as interface, 10.10.0.x
             .context("Failed to join multicast group")?;
-        log::info!("Joined multicast group {} on port {} with local iface ip {}", self.config.multicast_ip, self.config.multicast_port, node_ip);
+        log::info!(
+            "Joined multicast group {} on port {} with local iface ip {}",
+            self.config.multicast_ip,
+            self.config.multicast_port,
+            node_ip
+        );
 
-        let tx_network_socket = UdpSocket::bind(format!("{}:{}", node_ip, self.config.multicast_port)) //Try with own ip address
-            .await
-            .context("Failed to bind Multicast TX socket")?;
+        let tx_network_socket =
+            UdpSocket::bind(format!("{}:{}", node_ip, self.config.multicast_port)) //Try with own ip address
+                .await
+                .context("Failed to bind Multicast TX socket")?;
         tx_network_socket.set_multicast_loop_v4(false)?;
-        log::info!("Bound multicast TX socket to {}:{}. Multicast loopback is disabled.", node_ip, self.config.multicast_port);        
-
-
+        log::info!(
+            "Bound multicast TX socket to {}:{}. Multicast loopback is disabled.",
+            node_ip,
+            self.config.multicast_port
+        );
 
         let (tx_corosync_channel, mut rx_corosync_channel) = mpsc::channel::<Vec<u8>>(32);
         init_global_channel(tx_corosync_channel);
@@ -175,7 +188,9 @@ impl Router {
         });
 
         // Thread for generating regular update messages
-        let mut update_interval = tokio::time::interval(Duration::from_secs(self.mls_group_handler.update_interval_secs()));
+        let mut update_interval = tokio::time::interval(Duration::from_secs(
+            self.mls_group_handler.update_interval_secs(),
+        ));
 
         loop {
             select! {
@@ -223,7 +238,7 @@ impl Router {
                                     corosync::send_message(&self.corosync_handle, welcome.as_slice())
                                         .expect("Failed to send message through Corosync");
                                 }
-                                Err(e) => return Err(e.into()), // Or handle other errors
+                                Err(e) => {log::error!("Failed to add pending key packages")}, // Or handle other errors
                             }
                         }
                         Ok(Command::Remove{index}) => {
@@ -256,8 +271,8 @@ impl Router {
                         log::info!("Sending application message to {}:{} ({} bytes)", self.config.multicast_ip, self.config.multicast_port, out.len());
 
                         tx_network_socket.send_to(
-                                out.as_slice(), 
-                                format!("{}:{}", self.config.multicast_ip, self.config.multicast_port) 
+                                out.as_slice(),
+                                format!("{}:{}", self.config.multicast_ip, self.config.multicast_port)
                             ).await?;
                         },
                         Ok(Command::BroadcastKeyPackage) => {
@@ -315,7 +330,7 @@ impl Router {
                         log::warn!("Error processing appData coming from application: {}", e);
                     }
                 }
-            }  
+            }
 
                 _ = update_interval.tick() => {
                     log::info!("⏰ Automatic scheduled self-update...");
