@@ -27,18 +27,16 @@ impl Ed25519SignatureKeyPair {
             Err(e) => Err(CryptoError::from(e)),
         }
     }
-    pub fn from_file(identity: Vec<u8>) -> Result<Self, CredentialError> {
-        let signature_key = load_signing_key_from_file(identity);
-        match signature_key {
-            Ok(signing_key) => Ok(Self {
-                signature_key_pair: SignatureKeyPair::from_raw(
-                    SignatureScheme::ED25519,
-                    signing_key.as_bytes().to_vec(),
-                    signing_key.verifying_key().to_bytes().to_vec(),
-                ),
-            }),
-            Err(e) => Err(CredentialError::from(e)),
-        }
+
+    pub fn from_file(identity: u32) -> Result<Self, CredentialError> {
+        let signature_key = load_signing_key_from_file(identity)?;
+        Ok(Self {
+            signature_key_pair: SignatureKeyPair::from_raw(
+                SignatureScheme::ED25519,
+                signature_key.as_bytes().to_vec(),
+                signature_key.verifying_key().to_bytes().to_vec(),
+            ),
+        })
     }
 
     pub fn signature_key_pair(&self) -> &SignatureKeyPair {
@@ -52,11 +50,11 @@ impl Ed25519SignatureKeyPair {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ed25519CredentialData {
-    pub identity: Vec<u8>,
+    pub identity: u32,
     pub credential_key_bytes: Vec<u8>,
     pub not_after: u64,
     pub signature_bytes: Vec<u8>,
-    pub issuer: Vec<u8>,
+    pub issuer: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,20 +75,19 @@ impl Ed25519credential {
         &self,
         attached_key: Option<&SignaturePublicKey>,
     ) -> Result<(), CredentialError> {
-        if attached_key.is_some() {
-            // Used to ensure that CredentialWithKey contains same key as credential itself
-            if self.credential_data.credential_key_bytes != attached_key.unwrap().as_slice() {
+        if let Some(attached_key) = attached_key {
+            if self.credential_data.credential_key_bytes != attached_key.as_slice() {
                 return Err(CredentialError::InvalidSignatureKey);
             }
         }
 
         let message = generate_signing_message(
-            &self.credential_data.identity,
+            self.credential_data.identity,
             &self.credential_data.credential_key_bytes,
             self.credential_data.not_after,
         );
 
-        let verifying_key = load_verifying_key_from_file(self.credential_data.issuer.clone())?;
+        let verifying_key = load_verifying_key_from_file(self.credential_data.issuer)?;
 
         let signature = Signature::try_from(&self.credential_data.signature_bytes[..])
             .map_err(|_| CredentialError::InvalidSignature)?;
@@ -111,25 +108,26 @@ impl Ed25519credential {
         Ok(())
     }
 
-    pub fn from_file(identity: Vec<u8>) -> Result<Self, CredentialError> {
-        let identity = String::from_utf8(identity).map_err(|_| CredentialError::DecodingError)?;
-        let path = credential_file_path(&identity);
+    pub fn from_file(identity: u32) -> Result<Self, CredentialError> {
+        let path = credential_file_path(identity);
         if !path.exists() {
             return Err(CredentialError::FileReadError);
         }
-        let bytes = fs::read(path).map_err(|_| CredentialError::DecodingError)?;
+        let bytes = fs::read(path).map_err(|_| CredentialError::FileReadError)?;
         let data: Ed25519CredentialData =
-            bincode::deserialize(&bytes).map_err(|_| CredentialError::DecodingError)?;
+            bincode::deserialize(&bytes).map_err(|_| CredentialError::SerializationError)?;
         Ok(Self::new(data))
     }
 
     pub fn store(&self) -> Result<(), CredentialError> {
-        let identity = String::from_utf8(self.credential_data.identity.clone())
-            .map_err(|_| CredentialError::DecodingError)?;
-        let path = credential_file_path(&identity);
+        let path = credential_file_path(self.credential_data.identity);
         fs::create_dir_all(path.parent().unwrap()).map_err(|_| CredentialError::FileWriteError)?;
         fs::write(path, self.serialized_contents()).map_err(|_| CredentialError::FileWriteError)?;
         Ok(())
+    }
+
+    pub fn id(&self) -> u32 {
+        self.credential_data.identity
     }
 }
 
@@ -154,12 +152,12 @@ impl TryFrom<Credential> for Ed25519credential {
 }
 
 pub struct Ed25519Issuer {
-    identity: Vec<u8>,
+    identity: u32,
     signing_key: SigningKey,
 }
 
 impl Ed25519Issuer {
-    pub fn new(identity: Vec<u8>) -> Self {
+    pub fn new(identity: u32) -> Self {
         let mut csprng = OsRng;
         let signing_key = SigningKey::generate(&mut csprng);
         Self {
@@ -168,16 +166,16 @@ impl Ed25519Issuer {
         }
     }
 
-    pub fn from_file(identity: Vec<u8>) -> Result<Self, CredentialError> {
-        let signing_key = load_signing_key_from_file(identity.clone())?;
+    pub fn from_file(identity: u32) -> Result<Self, CredentialError> {
+        let signing_key = load_signing_key_from_file(identity)?;
         Ok(Self {
             identity,
             signing_key,
         })
     }
 
-    pub fn identity(&self) -> &[u8] {
-        &self.identity
+    pub fn identity(&self) -> u32 {
+        self.identity
     }
 
     pub fn signing_key(&self) -> &SigningKey {
@@ -186,6 +184,21 @@ impl Ed25519Issuer {
 
     pub fn verifying_key(&self) -> VerifyingKey {
         self.signing_key.verifying_key()
+    }
+
+    pub fn store(&self) -> Result<(), CredentialError> {
+        let priv_path = key_file_path(self.identity, "priv");
+        fs::create_dir_all(priv_path.parent().unwrap())
+            .map_err(|_| CredentialError::FileWriteError)?;
+        fs::write(priv_path, self.signing_key().to_keypair_bytes())
+            .map_err(|_| CredentialError::FileWriteError)?;
+
+        let pub_path = key_file_path(self.identity, "pub");
+        fs::create_dir_all(pub_path.parent().unwrap())
+            .map_err(|_| CredentialError::FileWriteError)?;
+        fs::write(pub_path, self.verifying_key().as_bytes())
+            .map_err(|_| CredentialError::FileWriteError)?;
+        Ok(())
     }
 }
 
@@ -208,10 +221,9 @@ impl CredentialIssuer for Ed25519Issuer {
 
     fn issue(
         &self,
-        identity: &str,
+        identity: u32,
         key_to_be_signed: &[u8],
     ) -> Result<CredentialWithKey, CredentialError> {
-        // Verify that the provided bytes is a valid Ed25519 key.
         let _ = VerifyingKey::from_bytes(
             key_to_be_signed
                 .try_into()
@@ -224,23 +236,19 @@ impl CredentialIssuer for Ed25519Issuer {
             .as_secs()
             + ONE_YEAR_IN_SECONDS;
 
-        let message = generate_signing_message(identity.as_bytes(), key_to_be_signed, not_after);
+        let message = generate_signing_message(identity, key_to_be_signed, not_after);
 
         let signature = self.sign(&message);
 
         let credential_data = Ed25519CredentialData {
-            identity: identity.as_bytes().to_vec(),
+            identity,
             credential_key_bytes: key_to_be_signed.to_vec(),
             not_after,
             signature_bytes: signature,
-            issuer: self.identity().to_vec(),
+            issuer: self.identity,
         };
         let credential = Ed25519credential::new(credential_data);
-        let store = credential.store();
-        match store {
-            Ok(_) => log::info!("Credential stored successfully."),
-            Err(e) => log::error!("Failed to store credential: {:?}", e),
-        }
+        credential.store()?;
 
         let signature_public_key = SignaturePublicKey::from(key_to_be_signed);
 
@@ -250,58 +258,37 @@ impl CredentialIssuer for Ed25519Issuer {
         })
     }
 
-    fn create_issuer(identity: &str) -> Self {
-        let issuer = Ed25519Issuer::new(identity.as_bytes().to_vec());
-
-        // Write public and secret key parts to files
-        let pub_key_path = key_file_path(identity, "pub");
-        if let Err(e) = std::fs::write(&pub_key_path, issuer.verifying_key().as_bytes()) {
-            log::error!("Failed to write public key: {}", e);
-        } else {
-            log::info!("Public key written to {:?}", pub_key_path);
-        }
-
-        let priv_key_path = key_file_path(identity, "priv");
-        if let Err(e) = std::fs::write(&priv_key_path, issuer.signing_key().to_bytes()) {
-            log::error!("Failed to write private key: {}", e);
-        } else {
-            log::info!("Private key written to {:?}", priv_key_path);
-        }
-
-        issuer
+    fn create_issuer(identity: u32) -> Self {
+        Ed25519Issuer::new(identity)
     }
 }
 
 pub fn generate_signing_message(
-    identity: &[u8],
+    identity: u32,
     credential_key_bytes: &[u8],
     not_after: u64,
 ) -> Vec<u8> {
     let mut message = Vec::new();
-    message.extend_from_slice(identity);
+    message.extend_from_slice(&identity.to_le_bytes());
     message.extend_from_slice(credential_key_bytes);
     message.extend_from_slice(&not_after.to_le_bytes());
     message
 }
 
-fn key_file_path(identity: &str, key_type: &str) -> PathBuf {
+fn key_file_path(identity: u32, key_type: &str) -> PathBuf {
     Path::new(AUTHENTICATION_DIR)
         .join("keys")
         .join(format!("{}.{}", identity, key_type))
 }
 
-fn credential_file_path(identity: &str) -> PathBuf {
+fn credential_file_path(identity: u32) -> PathBuf {
     Path::new(AUTHENTICATION_DIR)
         .join("credentials")
         .join(format!("{}.cred", identity))
 }
 
-pub fn load_verifying_key_from_file(
-    identity_bytes: Vec<u8>,
-) -> Result<VerifyingKey, CredentialError> {
-    let identity = String::from_utf8(identity_bytes.clone())
-        .map_err(|_| CredentialError::IssuerEncodingError)?;
-    let path = key_file_path(&identity, "pub");
+pub fn load_verifying_key_from_file(identity: u32) -> Result<VerifyingKey, CredentialError> {
+    let path = key_file_path(identity, "pub");
 
     if path.exists() {
         let data = fs::read(&path).map_err(|_| CredentialError::FileReadError)?;
@@ -312,11 +299,8 @@ pub fn load_verifying_key_from_file(
     }
 }
 
-#[allow(dead_code)]
-pub fn load_signing_key_from_file(identity_bytes: Vec<u8>) -> Result<SigningKey, CredentialError> {
-    let identity =
-        String::from_utf8(identity_bytes).map_err(|_| CredentialError::IssuerEncodingError)?;
-    let priv_key_path = key_file_path(&identity, "priv");
+pub fn load_signing_key_from_file(identity: u32) -> Result<SigningKey, CredentialError> {
+    let priv_key_path = key_file_path(identity, "priv");
 
     if priv_key_path.exists() {
         let data = fs::read(&priv_key_path).map_err(|_| CredentialError::FileReadError)?;

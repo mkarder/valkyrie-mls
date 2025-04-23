@@ -11,24 +11,21 @@ fn main() {
         std::process::exit(1);
     }
 
-    let ca = &args[1];
-    let subject = &args[2];
+    let ca = &args[1].parse::<u32>().unwrap();
+    let subject = &args[2].parse::<u32>().unwrap();
 
-    let issuer =
-        Ed25519Issuer::from_file(ca.as_bytes().to_vec()).expect("Failed to load issuer/CA");
+    let issuer = Ed25519Issuer::from_file(*ca).expect("Failed to load issuer/CA");
 
-    let subject_key = Ed25519SignatureKeyPair::from_file(subject.as_bytes().to_vec())
-        .expect("Failed to load subject's keypair");
+    let subject_key =
+        Ed25519SignatureKeyPair::from_file(*subject).expect("Failed to load subject's keypair");
 
     let credential = issuer
-        .issue(subject, subject_key.public_key())
+        .issue(*subject, subject_key.public_key())
         .expect("Failed to issue credential");
 
     assert_eq!(
         credential.credential,
-        Ed25519credential::from_file(subject.as_bytes().to_vec())
-            .unwrap()
-            .into()
+        Ed25519credential::from_file(*subject).unwrap().into()
     );
 
     println!("✅ Issued credential for {}", subject);

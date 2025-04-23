@@ -7,8 +7,8 @@ pub trait CredentialIssuer {
     fn public_key(&self) -> Vec<u8>;
     fn issue(
         &self,
-        identity: &str,
+        identity: u32,
         key_to_be_signed: &[u8],
     ) -> Result<CredentialWithKey, CredentialError>;
-    fn create_issuer(identity: &str) -> Self;
+    fn create_issuer(identity: u32) -> Self;
 }

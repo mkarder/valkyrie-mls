@@ -7,6 +7,7 @@ use anyhow::{Context, Error, Result};
 use once_cell::sync::OnceCell;
 use openmls::prelude::LeafNodeIndex;
 use rust_corosync::cpg::Handle;
+use rust_corosync::NodeId;
 use std::env;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
@@ -95,12 +96,26 @@ pub fn parse_command(buffer: &[u8]) -> Result<Command, Error> {
 }
 
 //Global transmission channel for Corosync
-pub static TX_CHANNEL: OnceCell<mpsc::Sender<Vec<u8>>> = OnceCell::new();
+pub static MLS_HANDSHAKE_CHANNEL: OnceCell<mpsc::Sender<Vec<u8>>> = OnceCell::new();
 
 pub fn init_global_channel(tx: mpsc::Sender<Vec<u8>>) {
-    TX_CHANNEL
+    MLS_HANDSHAKE_CHANNEL
         .set(tx)
-        .expect("Global TX_CHANNEL already initialized");
+        .expect("Global MLS_HANDSHAKE_CHANNEL already initialized");
+}
+
+pub static SIG_CHANNEL: OnceCell<mpsc::Sender<CorosyncSignal>> = OnceCell::new();
+
+pub fn init_signal_channel(tx: mpsc::Sender<CorosyncSignal>) {
+    SIG_CHANNEL
+        .set(tx)
+        .expect("Global SIG_CHANNEL already initialized");
+}
+
+#[derive(Debug, Clone)]
+pub enum CorosyncSignal {
+    NodeJoined(Vec<NodeId>),
+    NodeLeft(Vec<NodeId>),
 }
 
 pub struct Router {
@@ -160,7 +175,6 @@ impl Router {
 
         log::debug!(
             "[ROUTER] Joined multicast group {} on port {} with local iface ip {}",
-
             self.config.multicast_ip,
             self.config.multicast_port,
             node_ip
@@ -178,9 +192,11 @@ impl Router {
         );
         log::info!("[ROUTER] Socket Creation Completed.");
 
-
         let (tx_corosync_channel, mut rx_corosync_channel) = mpsc::channel::<Vec<u8>>(32);
         init_global_channel(tx_corosync_channel);
+
+        let (tx_corosync_signal, mut rx_corosync_signal) = mpsc::channel::<CorosyncSignal>(16);
+        init_signal_channel(tx_corosync_signal);
 
         let handle_clone = self.corosync_handle.clone();
         thread::spawn(move || {
@@ -215,6 +231,21 @@ impl Router {
                         }
                         Err(e) => {
                             log::error!("[ROUTER] Error processing incoming delivery service message: {}", e);
+                        }
+                    }
+                }
+
+                // (Totem) Corosync Membership changes
+                Some(signal) = rx_corosync_signal.recv() => {
+                    match signal {
+                        CorosyncSignal::NodeJoined(node_ids) => {
+                            log::info!("[ROUTER] Notified: Nodes joined: {:?}", node_ids);
+                            
+                            // Optionally trigger a re-sync, broadcast, or re-evaluation
+                        }
+                        CorosyncSignal::NodeLeft(node_ids) => {
+                            log::info!("[ROUTER] Notified: Nodes left: {:?}", node_ids);
+                            // Optionally remove or mark nodes for eviction
                         }
                     }
                 }

@@ -7,6 +7,7 @@ use openmls::prelude::{group_info::VerifiableGroupInfo, *};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use std::collections::HashMap;
+use std::time::SystemTime;
 use tls_codec::{Deserialize, Serialize};
 
 #[allow(dead_code)]
@@ -21,6 +22,8 @@ pub struct MlsEngine {
     update_interval_secs: u64,
     credential_with_key: CredentialWithKey,
     capabilities: Capabilities,
+    last_received: HashMap<LeafNodeIndex, SystemTime>,
+    pending_removals: Vec<LeafNodeIndex>,
 }
 
 pub trait MlsSwarmLogic {
@@ -71,7 +74,7 @@ impl MlsEngine {
             ),
         };
         let (credential_with_key, signature_key) = generate_credential_with_key(
-            config.node_id.clone().into_bytes(),
+            config.node_id.clone(),
             credential_type,
             cipher.signature_algorithm(),
             &provider,
@@ -107,6 +110,8 @@ impl MlsEngine {
             update_interval_secs,
             credential_with_key,
             capabilities,
+            last_received: HashMap::new(),
+            pending_removals: Vec::new(),
         }
     }
 
@@ -149,16 +154,15 @@ impl MlsEngine {
 impl MlsSwarmLogic for MlsEngine {
     fn process_incoming_network_message(&mut self, mut buf: &[u8]) -> Result<Vec<u8>, Error> {
         /*
-        let message_in =
-            MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
- */
-        let message_in = MlsMessageIn::tls_deserialize(&mut buf)
-            .map_err(|e| {
-                log::error!("Error processing message: {:?}", e);
-                Error::msg("Error processing message.")
-            })?;
+               let message_in =
+                   MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
+        */
+        let message_in = MlsMessageIn::tls_deserialize(&mut buf).map_err(|e| {
+            log::error!("Error processing message: {:?}", e);
+            Error::msg("Error processing message.")
+        })?;
 
-      match message_in.extract() {
+        match message_in.extract() {
             MlsMessageBodyIn::PublicMessage(msg) => {
                 let processed_message = self
                     .group
@@ -188,6 +192,11 @@ impl MlsSwarmLogic for MlsEngine {
                             log::error!("[MlsEngine] Error processing message: {:?}", e);
                             Error::msg("[MlsEngine] Error processing message.")
                         })?;
+
+                if let Sender::Member(leaf_index) = processed_message.sender() {
+                    self.last_received.insert(*leaf_index, SystemTime::now());
+                }
+
                 match processed_message.into_content() {
                     ProcessedMessageContent::ApplicationMessage(payload) => {
                         let content_bytes = payload.into_bytes();
@@ -297,7 +306,6 @@ impl MlsSwarmLogic for MlsEngine {
                             log::error!("Error processing message: {:?}", e);
                             Error::msg("Error processing message.")
                         })?;
-
                 // Validate sender's Credential
                 match self.verify_credential(processed_message.credential().clone(), None) {
                     Ok(_) => {}
@@ -305,6 +313,10 @@ impl MlsSwarmLogic for MlsEngine {
                         log::error!("Error verifying sender's credential: {:?}", e);
                         return Err(e);
                     }
+                }
+
+                if let Sender::Member(leaf_index) = processed_message.sender() {
+                    self.last_received.insert(*leaf_index, SystemTime::now());
                 }
 
                 match processed_message.into_content() {
@@ -348,50 +360,51 @@ impl MlsSwarmLogic for MlsEngine {
         }
     }
 
-
-     fn handle_incoming_welcome(&mut self, welcome: Welcome) -> Result<(), Error> {
+    fn handle_incoming_welcome(&mut self, welcome: Welcome) -> Result<(), Error> {
         log::debug!(
             "[MlsEngine] Node {:?} received Welcome message",
             self.config.node_id,
         );
-    
-        let staged_join = StagedWelcome::new_from_welcome(
-            &self.provider,
-            &self.group_join_config,
-            welcome,
-            None,
-        ).map_err(|e| {
-            log::error!("[MlsEngine] Error constructing staged join: {:?}", e);
-            e
-        })?;
-    
+
+        let staged_join =
+            StagedWelcome::new_from_welcome(&self.provider, &self.group_join_config, welcome, None)
+                .map_err(|e| {
+                    log::error!("[MlsEngine] Error constructing staged join: {:?}", e);
+                    e
+                })?;
+
         let sender_index = staged_join.welcome_sender_index();
+        self.last_received.insert(sender_index, SystemTime::now());
+
         let group = staged_join.into_group(&self.provider).map_err(|e| {
-            log::error!("[MlsEngine] Error joining group from StagedWelcome: {:?}", e);
+            log::error!(
+                "[MlsEngine] Error joining group from StagedWelcome: {:?}",
+                e
+            );
             Error::msg("Failed to convert staged join into group")
         })?;
-    
-        log::info!("[MlsEngine] Joined group with ID: {:?}", group.group_id().as_slice());
-    
+
+        log::info!(
+            "[MlsEngine] Joined group with ID: {:?}",
+            group.group_id().as_slice()
+        );
+
         let sender = group.member(sender_index).ok_or_else(|| {
             log::error!("[MlsEngine] Sender not found in group.");
             Error::msg("Sender not found in group.")
         })?;
-    
+
         self.verify_credential(sender.clone(), None).map_err(|e| {
             log::error!("[MlsEngine] Error verifying sender's credential: {:?}", e);
             e
         })?;
 
-    
         self.group = group;
 
         self.refresh_key_package()?;
 
-
         Ok(())
     }
-    
 
     fn handle_incoming_group_info(&mut self, _group_info: VerifiableGroupInfo) {
         log::warn!("Received GroupInfo message. No action taken. GroupInfo implies the use of external joins, which it not supported.");
@@ -421,7 +434,8 @@ impl MlsSwarmLogic for MlsEngine {
             .expect("Could not add members.");
 
         log::info!(
-            "Added new member to group with ID: {:?}",
+            "Added new member {:?} for group: {:?}",
+            key_package.leaf_node().credential(),
             self.group.group_id()
         );
 
@@ -516,6 +530,7 @@ impl MlsSwarmLogic for MlsEngine {
             .merge_pending_commit(&self.provider)
             .expect("Failed to merge pending commit");
 
+        self.last_received.remove(&leaf_node);
         (commit_bytes, welcome_bytes)
     }
 
@@ -631,8 +646,35 @@ impl MlsSwarmLogic for MlsEngine {
     }
 }
 
+pub trait MlsAutomaticRemoval {
+    fn check_for_removals(&mut self);
+    fn remove_pending(&mut self);
+    fn schedule_removal(&mut self, node_ids: Vec<u32>);
+}
+
+impl MlsAutomaticRemoval for MlsEngine {
+    fn check_for_removals(&mut self) {
+        todo!()
+    }
+
+    fn remove_pending(&mut self) {
+        todo!()
+    }
+
+    fn schedule_removal(&mut self, _node_ids: Vec<u32>) {
+        // let leaf_node_ids:  = Vec::new();
+        // for id in node_ids {
+        //     leaf_node_index = self
+        //     .group()
+        //     .members()
+        //     .find(|m| m.credential => { /*where members credential have id */});
+        //     self.pending_removals.append(leaf_node_index);
+        // }
+    }
+}
+
 fn generate_credential_with_key(
-    identity: Vec<u8>,
+    identity: u32,
     credential_type: CredentialType,
     signature_algorithm: SignatureScheme,
     provider: &impl OpenMlsProvider,
@@ -640,7 +682,8 @@ fn generate_credential_with_key(
     match credential_type {
         CredentialType::Basic => {
             log::info!("Generating Basic credential.");
-            let credential = BasicCredential::new(identity);
+            let id = identity.to_le_bytes().to_vec();
+            let credential = BasicCredential::new(id);
             let signature_keys = SignatureKeyPair::new(signature_algorithm)
                 .expect("Error generating a signature key pair.");
             signature_keys
@@ -658,7 +701,8 @@ fn generate_credential_with_key(
         CredentialType::X509 => {
             log::info!("Generating X.509 credential.");
             log::error!("X.509 credential generation not implemented. Using Basic credential.");
-            let credential = BasicCredential::new(identity);
+            let id = identity.to_le_bytes().to_vec();
+            let credential = BasicCredential::new(id);
             let signature_keys = SignatureKeyPair::new(signature_algorithm)
                 .expect("Error generating a signature key pair.");
             signature_keys
@@ -676,10 +720,10 @@ fn generate_credential_with_key(
         CredentialType::Other(custom_type) => match custom_type {
             0xF000 => {
                 log::info!("Generating Ed25519 credential.");
-
-                let credential = Ed25519credential::from_file(identity.clone())
+                println!("{}", identity);
+                let credential = Ed25519credential::from_file(identity)
                     .expect("Error loading Ed25519 credential from file.");
-                let ed25519_key_pair = Ed25519SignatureKeyPair::from_file(identity.clone())
+                let ed25519_key_pair = Ed25519SignatureKeyPair::from_file(identity)
                     .expect("Error loading Ed25519 signature key from file.");
 
                 (

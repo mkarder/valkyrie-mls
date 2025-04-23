@@ -24,19 +24,19 @@ use valkyrie_mls::mls_group_handler::{MlsEngine, MlsSwarmLogic};
 fn test_mls_group_operations() {
     let alice_config = MlsConfig {
         credential_type: "Basic".to_string(),
-        node_id: "Alice".to_string(),
+        node_id: 9999,
         update_interval_secs: 100,
     };
 
     let bob_config = MlsConfig {
         credential_type: "Basic".to_string(),
-        node_id: "Bob".to_string(),
+        node_id: 8888,
         update_interval_secs: 100,
     };
 
     let charlie_config = MlsConfig {
         credential_type: "Basic".to_string(),
-        node_id: "Charlie".to_string(),
+        node_id: 7777,
         update_interval_secs: 100,
     };
 
@@ -247,21 +247,19 @@ fn test_mls_group_operations() {
 fn test_mls_operations_with_ed25519_credential() {
     let alice_config = MlsConfig {
         credential_type: "ed25519".to_string(),
-        node_id: "Alice".to_string(),
+        node_id: 9999,
         update_interval_secs: 100,
     };
 
     let bob_config = MlsConfig {
         credential_type: "ed25519".to_string(),
-        node_id: "Bob".to_string(),
+        node_id: 8888,
         update_interval_secs: 100,
     };
 
-    // Generate three MLS Engines
+    // Generate two MLS Engines
     let mut alice_mls_engine = MlsEngine::new(alice_config);
     let mut bob_mls_engine = MlsEngine::new(bob_config);
-
-    
 
     // === Alice receives Bob's key package ===
     let bob_key_package_bytes = bob_mls_engine.get_key_package().unwrap();
@@ -294,7 +292,7 @@ fn test_mls_operations_with_ed25519_credential() {
     assert_eq!(
         alice_mls_engine.group().members().count(),
         2,
-        "Alice should have two members in the group afterq adding Bob."
+        "Alice should have two members in the group after adding Bob."
     );
 
     // Bob receives the welcome message and joins the group

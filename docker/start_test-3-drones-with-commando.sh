@@ -33,7 +33,7 @@ tmux send-keys -t $SESSION:0.2 'docker exec --privileged -it node4 bash' C-m
 tmux send-keys -t $SESSION:0.2 'cd /root/valkyrie-mls && ./valkyrie-mls' C-m
 
 # Run command tool locally
-tmux send-keys -t $SESSION:0.3 'RUST_LOG=debug ~/valkyrie-mls/target/debug/command' C-m
+tmux send-keys -t $SESSION:0.3 'RUST_LOG=info ~/valkyrie-mls/target/debug/command' C-m
 
 # Focus top-left pane and attach
 tmux select-pane -t $SESSION:0.3

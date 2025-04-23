@@ -12,6 +12,6 @@ multicast_port = 5000
 
 
 [mls]
-node_id = "NODE"
+node_id = 32
 credential_type = "Basic"
 update_interval_secs = 100
