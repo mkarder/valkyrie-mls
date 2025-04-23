@@ -20,14 +20,14 @@ pub fn deliver_callback(
     let my_nodeid = NodeId::from(my_nodeid);
 
     if nodeid == my_nodeid {
-        log::info!(
+        log::debug!(
             "[Corosync] Ignoring message from self (node ID: {})",
             nodeid
         );
         return;
     }
 
-    log::info!(
+    log::debug!(
         "[Corosync] Deliver callback: group=\"{}\", from node {:?} (pid {}), msg_len={}",
         group_name,
         nodeid,
@@ -53,17 +53,17 @@ pub fn confchg_callback(
     left_list: Vec<Address>,
     joined_list: Vec<Address>,
 ) {
-    log::info!(
+    log::debug!(
         "[Corosync] Confchg callback: Group \"{}\" membership changed.",
         group_name
     );
-    log::info!("  Current members: {} node(s)", member_list.len());
+    log::info!("[Corosync] Current members: {} node(s)", member_list.len());
 
     if !joined_list.is_empty() {
-        log::info!("  Nodes joined: {:?}", joined_list);
+        log::info!("[Corosync] Nodes joined: {:?}", joined_list);
     }
     if !left_list.is_empty() {
-        log::info!("  Nodes left: {:?}", left_list);
+        log::info!("[Corosync] Nodes left: {:?}", left_list);
     }
 }
 
@@ -81,7 +81,7 @@ pub fn initialize() -> cpg::Handle {
 
     join_group(&handle, "my_test_group").expect("[Corosync] Failed to join group");
 
-    log::info!("[Corosync] initialized with group \"my_test_group\".");
+    log::debug!("[Corosync] initialized with group \"my_test_group\".");
     handle
 }
 
@@ -98,14 +98,12 @@ pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::
         eprintln!("Failed to send message: {}", e);
         return Err(Box::new(e));
     }
-    log::info!(
+    log::debug!(
         "[Corosync] Sent message to group; msg_len={}",
         message.len()
     );
-        Ok(())
+    Ok(())
 }
-
-
 
 /// Blocking receive loop for Corosync messages (runs in a separate thread)
 pub fn receive_message(handle: &Handle) -> Result<(), Box<dyn std::error::Error>> {
