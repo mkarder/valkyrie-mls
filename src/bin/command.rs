@@ -191,7 +191,7 @@ async fn handle_input(input: &str, socket: &UdpSocket) -> Result<()> {
 
     // Expect the first part to be the "x" in 10.10.0.x:8000
     let ip_suffix = parts.next().ok_or_else(|| Error::msg("Missing node ID (x in 10.10.0.x)"))?;
-    let ip: String = format!("10.10.0.{ip_suffix}:8000");
+    let ip: String = format!("192.168.12.{ip_suffix}:8000");
 
     // Expect the next part to be the command letter
     let cmd = parts.next().ok_or_else(|| Error::msg("Missing command"))?;
