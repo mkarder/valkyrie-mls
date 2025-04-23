@@ -96,6 +96,7 @@ pub fn join_group(handle: &Handle, group_name: &str) -> Result<(), Box<dyn std::
 pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = cpg::mcast_joined(*handle, Guarantee::TypeAgreed, message) {
         eprintln!("Failed to send message: {}", e);
+        return Err(Box::new(e));
     }
     log::debug!(
         "[Corosync] Sent message to group; msg_len={}",
@@ -108,6 +109,7 @@ pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::
 pub fn receive_message(handle: &Handle) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = cpg::dispatch(*handle, rust_corosync::DispatchFlags::Blocking) {
         eprintln!("Dispatch error: {}", e);
+        return Err(Box::new(e));
     }
 
     Ok(())

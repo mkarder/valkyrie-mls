@@ -18,7 +18,7 @@ use tokio::time::Duration;
 
 use tokio::{select, signal};
 
-const MLS_MSG_BUFFER_SIZE: usize = 4096;
+const MLS_MSG_BUFFER_SIZE: usize = 16384; // 16KB
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,6 +133,7 @@ impl Router {
         let rx_app_socket = UdpSocket::bind(self.config.rx_app_sock_addr.clone())
             .await
             .context("Failed to bind Application RX socket")?;
+
         log::debug!(
             "[ROUTER] Listening for AppData coming from Application on {}",
             self.config.rx_app_sock_addr
@@ -156,8 +157,10 @@ impl Router {
         rx_network_socket
             .join_multicast_v4(self.config.multicast_ip.parse()?, node_ip) //Try with your own ip address as interface, 10.10.0.x
             .context("Failed to join multicast group")?;
+
         log::debug!(
             "[ROUTER] Joined multicast group {} on port {} with local iface ip {}",
+
             self.config.multicast_ip,
             self.config.multicast_port,
             node_ip
@@ -174,6 +177,7 @@ impl Router {
             self.config.multicast_port
         );
         log::info!("[ROUTER] Socket Creation Completed.");
+
 
         let (tx_corosync_channel, mut rx_corosync_channel) = mpsc::channel::<Vec<u8>>(32);
         init_global_channel(tx_corosync_channel);
@@ -255,6 +259,9 @@ impl Router {
                                 Err(e) => {
                                     log::error!("[ROUTER] Error processing AddPending command: {}", e);
                                 }
+
+                                Err(e) => {log::error!("Failed to add pending key packages")}, // Or handle other errors
+
                             }
                         }
                         Ok(Command::Remove { index }) => {
@@ -285,6 +292,7 @@ impl Router {
                                     log::error!("[ROUTER] Error processing Update command: {}", e);
                                 }
                             }
+
                         }
                         Ok(Command::RetrieveRatchetTree) => {
                             log::info!("[ROUTER] Received RetrieveRatchetTree command. \n Not implemented yet. Skipping operation...");
@@ -318,16 +326,20 @@ impl Router {
                                 }
                             }
                         }
+
                         Ok(Command::BroadcastKeyPackage) => {
                             log::debug!("[ROUTER] Received BroadcastKeyPackage command.");
                             match self.mls_group_handler.get_key_package() {
                                 Ok(key_package) => {
-                                    log::info!("BroadcastKeyPackage command processed: Sending key package.");
+
+                                    log::info!("[ROUTER] BroadcastKeyPackage command processed: Sending key package.");
+
                                     corosync::send_message(&self.corosync_handle, key_package.as_slice())
                                         .expect("Failed to send key package through Corosync");
                                     log::debug!("Key package sent to Corosync.");
                                 }
                                 Err(e) => {
+
                                     log::error!("Error processing BroadcastKeyPackage command: {}", e);
                                 }
                             }
