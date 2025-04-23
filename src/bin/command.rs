@@ -12,6 +12,9 @@ pub struct Cli {
     command: MlsCliCommand,
 }
 
+const IP_PREFIX: &str = "192.168.12";
+
+
 #[derive(Subcommand)]
 pub enum MlsCliCommand {
     Add {
@@ -139,7 +142,7 @@ async fn main() -> Result<()> {
     env_logger::init();
     log::info!("MLS Control CLI started. Type commands or Ctrl-C to exit.");
     log::info!(
-            "\nAvailable Commands:
+        "\nAvailable Commands:
       b            → Broadcast KeyPackage
       a            → Add Pending
       r            → Retrieve Ratchet Tree
@@ -148,11 +151,12 @@ async fn main() -> Result<()> {
       m <msg>      → Send application message
       + <file>     → Add KeyPackage from file
     
-    Example: 12 b          (broadcast to 10.10.0.12:8000)
-             4 rm 2        (remove member 2 from 10.10.0.4)
-             9 m Hello     (send app msg to 10.10.0.9)
-             7 + ./kp.bin  (add KeyPackage to 10.10.0.7)"
-        );
+    Example: 12 b          (broadcast to {ip_prefix}.12:8000)
+             4 rm 2        (remove member 2 from {ip_prefix}.4)
+             9 m Hello     (send app msg to {ip_prefix}.9)
+             7 + ./kp.bin  (add KeyPackage to {ip_prefix}.7)",
+        ip_prefix = IP_PREFIX
+    );
     
 
     let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
@@ -190,8 +194,8 @@ async fn handle_input(input: &str, socket: &UdpSocket) -> Result<()> {
     let mut parts = input.trim().split_whitespace();
 
     // Expect the first part to be the "x" in 10.10.0.x:8000
-    let ip_suffix = parts.next().ok_or_else(|| Error::msg("Missing node ID (x in 10.10.0.x)"))?;
-    let ip: String = format!("10.10.0.{ip_suffix}:8000");
+    let ip_suffix = parts.next().ok_or_else(|| Error::msg(format!("Missing node ID (x in {IP_PREFIX}.x)")))?;
+    let ip: String = format!("{IP_PREFIX}.{ip_suffix}:8000");
 
     // Expect the next part to be the command letter
     let cmd = parts.next().ok_or_else(|| Error::msg("Missing command"))?;
