@@ -1,4 +1,4 @@
-use crate::mls_group_handler::MlsSwarmLogic;
+use crate::mls_group_handler::{MlsAutomaticRemoval, MlsSwarmLogic};
 
 use crate::config::RouterConfig;
 use crate::corosync::receive_message;
@@ -246,7 +246,10 @@ impl Router {
                         }
                         CorosyncSignal::NodeLeft(node_ids) => {
                             log::info!("[ROUTER] Notified: Nodes left: {:?}", node_ids);
-                            // Optionally remove or mark nodes for eviction
+                            self.mls_group_handler.schedule_removal(
+                                node_ids.into_iter().map(Into::into).collect() // Convert NodeId to u32
+                            );
+
                         }
                     }
                 }
@@ -420,7 +423,22 @@ impl Router {
             }
 
                 _ = update_interval.tick() => {
-                    log::debug!("⏰ Automatic scheduled self-update...");
+                    log::debug!("⏰ Scheduled Update Cycle scheduled self-update...");
+                    // Check for pending Removals
+                    match self.mls_group_handler.remove_pending() {
+                        Ok((commit, welcome_option)) => {
+                            log::info!("✅ Automatic removal successful.");
+                            corosync::send_message(&self.corosync_handle, commit.as_slice())
+                              .expect("Failed to send message through Corosync");
+                            if let Some(welcome) = welcome_option {
+                                corosync::send_message(&self.corosync_handle, welcome.as_slice())
+                                  .expect("Failed to send message through Corosync");
+                            }
+                        }
+                        Err(e) => log::error!("❌ Automatic removal failed: {:?}", e),
+                    }
+                    // Check for pending Adds
+                    // Update self
                     match self.mls_group_handler.update_self() {
                         Ok((commit, welcome_option)) => {
                             log::info!("✅ Automatic self-update successful.");

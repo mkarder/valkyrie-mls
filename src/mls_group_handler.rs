@@ -669,26 +669,32 @@ impl MlsAutomaticRemoval for MlsEngine {
         let (group_commit, welcome_option, _group_info) = self
             .group
             .remove_members(&self.provider, &self.signature_key, &self.pending_removals)
-            .map_err(|e| anyhow::anyhow!("remove_members failed: {}", e))?;
-
-        let commit_bytes = group_commit
-            .tls_serialize_detached()
-            .map_err(|e| anyhow::anyhow!("Failed to serialize commit: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("[MlsAutomaticRemoval] remove_members() failed: {}", e))?;
+        log::debug!(
+            "[MlsAutomaticRemoval] Sucessfully removed {:?}",
+            self.pending_removals
+        );
+        let commit_bytes = group_commit.tls_serialize_detached().map_err(|e| {
+            anyhow::anyhow!("[MlsAutomaticRemoval] Failed to serialize commit: {}", e)
+        })?;
 
         let welcome_bytes = match welcome_option {
-            Some(welcome) => Some(
-                welcome
-                    .tls_serialize_detached()
-                    .map_err(|e| anyhow::anyhow!("Failed to serialize Welcome: {}", e))?,
-            ),
+            Some(welcome) => Some(welcome.tls_serialize_detached().map_err(|e| {
+                anyhow::anyhow!("[MlsAutomaticRemoval] Failed to serialize Welcome: {}", e)
+            })?),
             None => None,
         };
 
         self.group
             .merge_pending_commit(&self.provider)
-            .map_err(|e| anyhow::anyhow!("Failed to merge pending commit: {}", e))?;
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "[MlsAutomaticRemoval] Failed to merge pending commit: {}",
+                    e
+                )
+            })?;
 
-        self.last_received.clear();
+        self.pending_removals.clear();
 
         Ok((commit_bytes, welcome_bytes))
     }
