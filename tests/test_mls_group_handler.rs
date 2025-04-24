@@ -76,7 +76,11 @@ fn test_mls_group_operations() {
     );
 
     // === Alice adds Bob ===
-    let (_group_commit, bob_welcome) = alice_mls_engine.add_pending_key_packages().unwrap();
+    let (_group_commit, bob_welcome) = alice_mls_engine
+        .add_pending_key_packages()
+        .unwrap()
+        .expect("Expected key packages to be available");
+
     assert_eq!(
         alice_mls_engine.group().members().count(),
         2,
@@ -203,7 +207,10 @@ fn test_mls_group_operations() {
     );
 
     // === Bob adds Charlie ===
-    let (group_commit, welcome) = bob_mls_engine.add_pending_key_packages().unwrap();
+    let (group_commit, welcome) = bob_mls_engine
+        .add_pending_key_packages()
+        .unwrap()
+        .expect("Expected key packages to be available");
 
     alice_mls_engine
         .process_incoming_delivery_service_message(&group_commit)
@@ -289,11 +296,11 @@ fn test_mls_operations_with_ed25519_credential() {
     );
 
     // === Alice adds Bob ===
-    let result = alice_mls_engine.add_pending_key_packages();
-    if result.is_err() {
-        panic!("Failed to add pending key packages: {:?}", result.err());
-    }
-    let (_group_commit, bob_welcome) = result.unwrap();
+    let (_group_commit, bob_welcome) = alice_mls_engine
+        .add_pending_key_packages()
+        .unwrap()
+        .expect("Expected key packages to be available");
+
     assert_eq!(
         alice_mls_engine.group().members().count(),
         2,

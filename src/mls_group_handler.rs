@@ -29,7 +29,7 @@ pub struct MlsEngine {
 pub trait MlsSwarmLogic {
     fn add_new_member(&mut self, key_package: KeyPackage) -> (Vec<u8>, Vec<u8>);
     fn add_new_member_from_bytes(&mut self, key_package_bytes: &[u8]) -> (Vec<u8>, Vec<u8>);
-    fn add_pending_key_packages(&mut self) -> Result<(Vec<u8>, Vec<u8>), Error>;
+    fn add_pending_key_packages(&mut self) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error>;
 
     fn remove_member(&mut self, leaf_node: LeafNodeIndex) -> (Vec<u8>, Option<Vec<u8>>);
 
@@ -300,13 +300,7 @@ impl MlsSwarmLogic for MlsEngine {
             }
 
             MlsMessageBodyIn::PrivateMessage(msg) => {
-                let processed_message =
-                    self.group
-                        .process_message(&self.provider, msg)
-                        .map_err(|e| {
-                            log::error!("Error processing message: {:?}", e);
-                            Error::msg("Error processing message.")
-                        })?;
+                let processed_message = self.group.process_message(&self.provider, msg)?;
                 // Validate sender's Credential
                 match self.verify_credential(processed_message.credential().clone(), None) {
                     Ok(_) => {}
@@ -454,7 +448,7 @@ impl MlsSwarmLogic for MlsEngine {
         (group_commit_out, welcome_out)
     }
 
-    fn add_pending_key_packages(&mut self) -> Result<(Vec<u8>, Vec<u8>), Error> {
+    fn add_pending_key_packages(&mut self) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
         let mut key_packages = Vec::new();
         for (_key_ref, key_package) in self.pending_key_packages.iter() {
             key_packages.push(key_package.clone());
@@ -462,9 +456,7 @@ impl MlsSwarmLogic for MlsEngine {
 
         // Early return if there are no key packages to add
         if key_packages.is_empty() {
-            // You could also return Ok with empty data if that fits your use case better
-            log::warn!("No key packages to add");
-            return Err(Error::msg("No key packages to add"));
+            return Ok(None);
         }
 
         let (group_commit, welcome, _group_info) =
@@ -482,7 +474,7 @@ impl MlsSwarmLogic for MlsEngine {
         let _ = self.group.merge_pending_commit(&self.provider);
         self.pending_key_packages.clear();
 
-        Ok((group_commit_out, welcome_out))
+        Ok(Some((group_commit_out, welcome_out)))
     }
 
     fn handle_incoming_commit(&mut self, commit: StagedCommit) -> Result<(), Error> {
@@ -756,6 +748,24 @@ impl MlsAutomaticRemoval for MlsEngine {
             "No group member matched node_id = {}",
             target_id
         ))
+    }
+}
+
+pub trait MlsGroupDiscovery {
+    fn is_forever_alone(&self) -> bool;
+}
+
+impl MlsGroupDiscovery for MlsEngine {
+    /*
+    We wont receive our own remove as this implies that we have lost connection to the swarm.
+    I.e., to check if we have an operational group, we need to check if we are the only node left in the Mls group.
+    This is also why all entities start with a group.
+    The rule is that the smaller group will merge with the larger.
+    */
+    fn is_forever_alone(&self) -> bool {
+        self.group
+            .members()
+            .any(|m| m.credential != self.credential_with_key.credential)
     }
 }
 
