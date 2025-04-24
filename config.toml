@@ -14,4 +14,4 @@ multicast_port = 5000
 [mls]
 node_id = "node7"
 credential_type = "ed25519"
-update_interval_secs = 100
+update_interval_secs = 9999999999 #Set arbitrarily large so that there are no updates sent during testing
