@@ -659,12 +659,16 @@ impl MlsSwarmLogic for MlsEngine {
 }
 
 pub trait MlsAutomaticRemoval {
+    fn have_pending_removals(&self) -> bool;
     fn remove_pending(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error>;
     fn schedule_removal(&mut self, node_ids: Vec<u32>);
     fn get_leaf_index_from_id(&mut self, id: u32) -> Result<LeafNodeIndex, Error>;
 }
 
 impl MlsAutomaticRemoval for MlsEngine {
+    fn have_pending_removals(&self) -> bool {
+        !self.pending_removals.is_empty()
+    }
     fn remove_pending(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
         let (group_commit, welcome_option, _group_info) = self
             .group
@@ -840,7 +844,7 @@ fn generate_group_config() -> MlsGroupJoinConfig {
     MlsGroupJoinConfig::builder()
         .padding_size(0)
         .sender_ratchet_configuration(SenderRatchetConfiguration::new(
-            5,   // out_of_order_tolerance
+            5,    // out_of_order_tolerance
             1000, // maximum_forward_distance
         ))
         .use_ratchet_tree_extension(true)
@@ -851,7 +855,7 @@ fn generate_group_create_config(capabilities: Capabilities) -> MlsGroupCreateCon
     MlsGroupCreateConfig::builder()
         .padding_size(0)
         .sender_ratchet_configuration(SenderRatchetConfiguration::new(
-            5,   // out_of_order_tolerance
+            5,    // out_of_order_tolerance
             1000, // maximum_forward_distance
         ))
         .capabilities(capabilities)
