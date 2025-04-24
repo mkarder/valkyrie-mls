@@ -198,10 +198,6 @@ impl MlsSwarmLogic for MlsEngine {
                     self.last_received.insert(*leaf_index, SystemTime::now());
                 }
 
-                if let Sender::Member(leaf_index) = processed_message.sender() {
-                    self.last_received.insert(*leaf_index, SystemTime::now());
-                }
-
                 match processed_message.into_content() {
                     ProcessedMessageContent::ApplicationMessage(payload) => {
                         let content_bytes = payload.into_bytes();
@@ -324,10 +320,6 @@ impl MlsSwarmLogic for MlsEngine {
                     self.last_received.insert(*leaf_index, SystemTime::now());
                 }
 
-                if let Sender::Member(leaf_index) = processed_message.sender() {
-                    self.last_received.insert(*leaf_index, SystemTime::now());
-                }
-
                 match processed_message.into_content() {
                     ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
                         match self.handle_incoming_commit(*staged_commit) {
@@ -385,8 +377,6 @@ impl MlsSwarmLogic for MlsEngine {
         let sender_index = staged_join.welcome_sender_index();
         self.last_received.insert(sender_index, SystemTime::now());
 
-        self.last_received.insert(sender_index, SystemTime::now());
-
         let group = staged_join.into_group(&self.provider).map_err(|e| {
             log::error!(
                 "[MlsEngine] Error joining group from StagedWelcome: {:?}",
@@ -398,11 +388,6 @@ impl MlsSwarmLogic for MlsEngine {
             );
             Error::msg("Failed to convert staged join into group")
         })?;
-
-        log::info!(
-            "[MlsEngine] Joined group with ID: {:?}",
-            group.group_id().as_slice()
-        );
 
         log::info!(
             "[MlsEngine] Joined group with ID: {:?}",
@@ -550,7 +535,6 @@ impl MlsSwarmLogic for MlsEngine {
             .merge_pending_commit(&self.provider)
             .expect("Failed to merge pending commit");
 
-        self.last_received.remove(&leaf_node);
         self.last_received.remove(&leaf_node);
         (commit_bytes, welcome_bytes)
     }
