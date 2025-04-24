@@ -157,6 +157,7 @@ impl MlsSwarmLogic for MlsEngine {
                let message_in =
                    MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
         */
+
         let message_in = MlsMessageIn::tls_deserialize(&mut buf).map_err(|e| {
             log::error!("Error processing message: {:?}", e);
             Error::msg("Error processing message.")
@@ -192,6 +193,10 @@ impl MlsSwarmLogic for MlsEngine {
                             log::error!("[MlsEngine] Error processing message: {:?}", e);
                             Error::msg("[MlsEngine] Error processing message.")
                         })?;
+
+                if let Sender::Member(leaf_index) = processed_message.sender() {
+                    self.last_received.insert(*leaf_index, SystemTime::now());
+                }
 
                 if let Sender::Member(leaf_index) = processed_message.sender() {
                     self.last_received.insert(*leaf_index, SystemTime::now());
@@ -319,6 +324,10 @@ impl MlsSwarmLogic for MlsEngine {
                     self.last_received.insert(*leaf_index, SystemTime::now());
                 }
 
+                if let Sender::Member(leaf_index) = processed_message.sender() {
+                    self.last_received.insert(*leaf_index, SystemTime::now());
+                }
+
                 match processed_message.into_content() {
                     ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
                         match self.handle_incoming_commit(*staged_commit) {
@@ -376,13 +385,24 @@ impl MlsSwarmLogic for MlsEngine {
         let sender_index = staged_join.welcome_sender_index();
         self.last_received.insert(sender_index, SystemTime::now());
 
+        self.last_received.insert(sender_index, SystemTime::now());
+
         let group = staged_join.into_group(&self.provider).map_err(|e| {
+            log::error!(
+                "[MlsEngine] Error joining group from StagedWelcome: {:?}",
+                e
+            );
             log::error!(
                 "[MlsEngine] Error joining group from StagedWelcome: {:?}",
                 e
             );
             Error::msg("Failed to convert staged join into group")
         })?;
+
+        log::info!(
+            "[MlsEngine] Joined group with ID: {:?}",
+            group.group_id().as_slice()
+        );
 
         log::info!(
             "[MlsEngine] Joined group with ID: {:?}",
@@ -531,6 +551,7 @@ impl MlsSwarmLogic for MlsEngine {
             .expect("Failed to merge pending commit");
 
         self.last_received.remove(&leaf_node);
+        self.last_received.remove(&leaf_node);
         (commit_bytes, welcome_bytes)
     }
 
@@ -650,6 +671,7 @@ pub trait MlsAutomaticRemoval {
     fn check_for_removals(&mut self);
     fn remove_pending(&mut self);
     fn schedule_removal(&mut self, node_ids: Vec<u32>);
+    fn get_leaf_index_from_id(&mut self, id: u32) -> Result<LeafNodeIndex, Error>;
 }
 
 impl MlsAutomaticRemoval for MlsEngine {
@@ -661,15 +683,59 @@ impl MlsAutomaticRemoval for MlsEngine {
         todo!()
     }
 
-    fn schedule_removal(&mut self, _node_ids: Vec<u32>) {
-        // let leaf_node_ids:  = Vec::new();
-        // for id in node_ids {
-        //     leaf_node_index = self
-        //     .group()
-        //     .members()
-        //     .find(|m| m.credential => { /*where members credential have id */});
-        //     self.pending_removals.append(leaf_node_index);
-        // }
+    fn schedule_removal(&mut self, node_ids: Vec<u32>) {
+        for target_id in node_ids {
+            match self.get_leaf_index_from_id(target_id) {
+                Ok(index) => {
+                    self.pending_removals.push(index);
+                }
+                Err(e) => {
+                    log::error!(
+                        "[MlsAutomaticRemoval] Could not resolve LeafNodeIndex for ID {}: {}",
+                        target_id,
+                        e
+                    );
+                }
+            }
+        }
+    }
+
+    fn get_leaf_index_from_id(&mut self, target_id: u32) -> Result<LeafNodeIndex, Error> {
+        for member in self.group().members() {
+            let id_match = match member.credential.credential_type() {
+                CredentialType::Basic => {
+                    let cred = BasicCredential::try_from(member.credential.clone())
+                        .map_err(|_| anyhow::anyhow!("Failed to parse BasicCredential"))?;
+                    let id_bytes = cred.identity();
+                    u32::from_le_bytes(
+                        id_bytes
+                            .try_into()
+                            .map_err(|_| anyhow::anyhow!("Basic identity is not 4 bytes"))?,
+                    ) == target_id
+                }
+
+                CredentialType::X509 => {
+                    // Not implemented — skip X509 members
+                    false
+                }
+                CredentialType::Other(0xF000) => {
+                    let cred = Ed25519credential::try_from(member.credential.clone())
+                        .map_err(|_| anyhow::anyhow!("Failed to parse Ed25519Credential"))?;
+                    cred.credential_data.identity == target_id
+                }
+
+                CredentialType::Other(_) => false,
+            };
+
+            if id_match {
+                return Ok(member.index);
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "No group member matched node_id = {}",
+            target_id
+        ))
     }
 }
 
@@ -720,7 +786,6 @@ fn generate_credential_with_key(
         CredentialType::Other(custom_type) => match custom_type {
             0xF000 => {
                 log::info!("Generating Ed25519 credential.");
-                println!("{}", identity);
                 let credential = Ed25519credential::from_file(identity)
                     .expect("Error loading Ed25519 credential from file.");
                 let ed25519_key_pair = Ed25519SignatureKeyPair::from_file(identity)

@@ -2,7 +2,12 @@ use openmls::prelude::*;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use tls_codec::Serialize;
 use valkyrie_mls::config::MlsConfig;
-use valkyrie_mls::mls_group_handler::{MlsEngine, MlsSwarmLogic};
+use valkyrie_mls::mls_group_handler::{MlsAutomaticRemoval, MlsEngine, MlsSwarmLogic};
+
+/// Alice   <--> ID 9999
+/// Bob     <--> ID 8888
+/// Alice has a self-signed, valid Ed25519 Credential.
+/// Bob has a valid Ed25519 Credential signed by Alice.
 
 /// This test replicates the functionality of the group test from
 /// `openmls-0.6.0/tests/mls_group.rs`.
@@ -323,5 +328,83 @@ fn test_mls_operations_with_ed25519_credential() {
     assert_eq!(
         alice_mls_engine.group().epoch_authenticator().as_slice(),
         bob_mls_engine.group().epoch_authenticator().as_slice()
+    );
+}
+
+#[test]
+fn test_basic_credential_identity_matching() {
+    // Generate Alice (9999) and Bob (8888)
+    let config = MlsConfig {
+        credential_type: "Basic".to_string(),
+        node_id: 9999,
+        update_interval_secs: 100,
+    };
+
+    let mut alice = MlsEngine::new(config);
+
+    let bob_config = MlsConfig {
+        credential_type: "Basic".to_string(),
+        node_id: 8888,
+        update_interval_secs: 100,
+    };
+    let bob = MlsEngine::new(bob_config.clone());
+
+    let bob_key_package_bytes = bob.get_key_package().unwrap();
+    alice
+        .process_incoming_delivery_service_message(&bob_key_package_bytes)
+        .unwrap();
+
+    alice.add_pending_key_packages().unwrap();
+
+    // Now test lookup of Bob
+    let bob_index = alice.get_leaf_index_from_id(8888);
+    assert!(
+        bob_index.is_ok(),
+        "Expected to find Bob (node_id = 8888), but got error"
+    );
+
+    // Lookup of a non-existent node
+    let missing_index = alice.get_leaf_index_from_id(1234);
+    assert!(
+        missing_index.is_err(),
+        "Expected lookup of non-existent node_id to fail"
+    );
+}
+
+#[test]
+fn test_ed25519_credential_identity_matching() {
+    // Generate Alice (9999) and Bob (8888)
+    let config = MlsConfig {
+        credential_type: "ed25519".to_string(),
+        node_id: 9999,
+        update_interval_secs: 100,
+    };
+
+    let mut alice = MlsEngine::new(config);
+
+    let bob_config = MlsConfig {
+        credential_type: "ed25519".to_string(),
+        node_id: 8888,
+        update_interval_secs: 100,
+    };
+    let bob = MlsEngine::new(bob_config.clone());
+
+    let bob_key_package_bytes = bob.get_key_package().unwrap();
+    alice
+        .process_incoming_delivery_service_message(&bob_key_package_bytes)
+        .unwrap();
+
+    alice.add_pending_key_packages().unwrap();
+
+    let bob_index = alice.get_leaf_index_from_id(8888);
+    assert!(
+        bob_index.is_ok(),
+        "Expected to find Bob (node_id = 8888), but got error"
+    );
+
+    let missing_index = alice.get_leaf_index_from_id(1234);
+    assert!(
+        missing_index.is_err(),
+        "Expected lookup of non-existent node_id to fail"
     );
 }

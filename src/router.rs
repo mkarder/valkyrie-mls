@@ -240,7 +240,8 @@ impl Router {
                     match signal {
                         CorosyncSignal::NodeJoined(node_ids) => {
                             log::info!("[ROUTER] Notified: Nodes joined: {:?}", node_ids);
-                            
+
+
                             // Optionally trigger a re-sync, broadcast, or re-evaluation
                         }
                         CorosyncSignal::NodeLeft(node_ids) => {
@@ -290,9 +291,6 @@ impl Router {
                                 Err(e) => {
                                     log::error!("[ROUTER] Error processing AddPending command: {}", e);
                                 }
-
-                                Err(e) => {log::error!("Failed to add pending key packages")}, // Or handle other errors
-
                             }
                         }
                         Ok(Command::Remove { index }) => {
