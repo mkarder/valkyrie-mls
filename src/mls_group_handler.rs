@@ -486,10 +486,11 @@ impl MlsSwarmLogic for MlsEngine {
     }
 
     fn handle_incoming_commit(&mut self, commit: StagedCommit) -> Result<(), Error> {
+        // Handle ADD operations: remove from pending_key_packages & verify new credentials
         for add in commit.add_proposals() {
             let key_package = add.add_proposal().key_package().clone();
 
-            let key_ref = key_package
+            let key_ref: hash_ref::HashReference = key_package
                 .hash_ref(self.provider.crypto())
                 .expect("Error getting hash_ref from KeyPackage");
 
@@ -506,6 +507,12 @@ impl MlsSwarmLogic for MlsEngine {
                     return Err(e);
                 }
             }
+        }
+
+        // Handle REMOVE operations: remove LeafNodeIndex in pending_removals list (array)
+        for remove in commit.remove_proposals() {
+            let removed_index = remove.remove_proposal().removed();
+            self.pending_removals.retain(|idx| *idx != removed_index);
         }
 
         let _ = self
@@ -652,19 +659,38 @@ impl MlsSwarmLogic for MlsEngine {
 }
 
 pub trait MlsAutomaticRemoval {
-    fn check_for_removals(&mut self);
-    fn remove_pending(&mut self);
+    fn remove_pending(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error>;
     fn schedule_removal(&mut self, node_ids: Vec<u32>);
     fn get_leaf_index_from_id(&mut self, id: u32) -> Result<LeafNodeIndex, Error>;
 }
 
 impl MlsAutomaticRemoval for MlsEngine {
-    fn check_for_removals(&mut self) {
-        todo!()
-    }
+    fn remove_pending(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
+        let (group_commit, welcome_option, _group_info) = self
+            .group
+            .remove_members(&self.provider, &self.signature_key, &self.pending_removals)
+            .map_err(|e| anyhow::anyhow!("remove_members failed: {}", e))?;
 
-    fn remove_pending(&mut self) {
-        todo!()
+        let commit_bytes = group_commit
+            .tls_serialize_detached()
+            .map_err(|e| anyhow::anyhow!("Failed to serialize commit: {}", e))?;
+
+        let welcome_bytes = match welcome_option {
+            Some(welcome) => Some(
+                welcome
+                    .tls_serialize_detached()
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize Welcome: {}", e))?,
+            ),
+            None => None,
+        };
+
+        self.group
+            .merge_pending_commit(&self.provider)
+            .map_err(|e| anyhow::anyhow!("Failed to merge pending commit: {}", e))?;
+
+        self.last_received.clear();
+
+        Ok((commit_bytes, welcome_bytes))
     }
 
     fn schedule_removal(&mut self, node_ids: Vec<u32>) {
