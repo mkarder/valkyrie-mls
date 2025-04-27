@@ -10,6 +10,12 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 use tls_codec::{Deserialize, Serialize};
 
+pub enum MlsSwarmState {
+    Alone,
+    SubGroup,
+    MainGroup,
+}
+
 #[allow(dead_code)]
 pub struct MlsEngine {
     config: MlsConfig,
@@ -24,6 +30,7 @@ pub struct MlsEngine {
     capabilities: Capabilities,
     last_received: HashMap<LeafNodeIndex, SystemTime>,
     pending_removals: Vec<LeafNodeIndex>,
+    totem_group_size: u32,
 }
 
 pub trait MlsSwarmLogic {
@@ -42,6 +49,8 @@ pub trait MlsSwarmLogic {
         unverified_credential: Credential,
         attached_key: Option<&SignaturePublicKey>,
     ) -> Result<(), Error>;
+
+    fn credential_present_in_group(&self, credential: Credential) -> bool;
 
     #[allow(dead_code)]
     fn retrieve_ratchet_tree(&self) -> Vec<u8>;
@@ -112,6 +121,7 @@ impl MlsEngine {
             capabilities,
             last_received: HashMap::new(),
             pending_removals: Vec::new(),
+            totem_group_size: 1, // We always start with ourself in a group of 1
         }
     }
 
@@ -148,6 +158,10 @@ impl MlsEngine {
 
     pub fn update_interval_secs(&self) -> u64 {
         self.update_interval_secs
+    }
+
+    pub fn update_totem_group_size(&mut self, size: u32) {
+        self.totem_group_size = size;
     }
 }
 
@@ -369,9 +383,8 @@ impl MlsSwarmLogic for MlsEngine {
                 })?;
 
         let sender_index = staged_join.welcome_sender_index();
-        self.last_received.insert(sender_index, SystemTime::now());
 
-        let group = staged_join.into_group(&self.provider).map_err(|e| {
+        let future_group = staged_join.into_group(&self.provider).map_err(|e| {
             log::error!(
                 "[MlsEngine] Error joining group from StagedWelcome: {:?}",
                 e
@@ -383,12 +396,7 @@ impl MlsSwarmLogic for MlsEngine {
             Error::msg("Failed to convert staged join into group")
         })?;
 
-        log::info!(
-            "[MlsEngine] Joined group with ID: {:?}",
-            group.group_id().as_slice()
-        );
-
-        let sender = group.member(sender_index).ok_or_else(|| {
+        let sender = future_group.member(sender_index).ok_or_else(|| {
             log::error!("[MlsEngine] Sender not found in group.");
             Error::msg("Sender not found in group.")
         })?;
@@ -398,10 +406,20 @@ impl MlsSwarmLogic for MlsEngine {
             e
         })?;
 
-        self.group = group;
+        if self.should_join(&future_group) {
+            self.group = future_group;
+            log::info!(
+                "[MlsEngine] Joined group with ID: {:?}",
+                self.group.group_id().as_slice()
+            );
+            self.last_received.clear(); // Flush old, as we join a new roup.
+            self.last_received.insert(sender_index, SystemTime::now());
+            self.refresh_key_package()?;
 
-        self.refresh_key_package()?;
+            return Ok(());
+        }
 
+        log::debug!("Received Welcome for a subgroup smaller than ours. Discarding.");
         Ok(())
     }
 
@@ -410,7 +428,16 @@ impl MlsSwarmLogic for MlsEngine {
     }
 
     fn handle_incoming_key_package(&mut self, key_package_in: KeyPackageIn) {
-        log::info!("Received KeyPackage message. Verifying and storing it.");
+        // Check if KeyPackage is from someone within the group
+        if self.credential_present_in_group(key_package_in.unverified_credential().credential) {
+            log::debug!(
+                "[MlsEngine] Received KeyPackage from someone in our group. Discarding it."
+            );
+            return;
+        }
+
+        // Verify credential and store key package
+        log::info!("Received KeyPackage message. Verifying and  storing it.");
         match self.verify_credential(
             key_package_in.unverified_credential().credential,
             Some(&key_package_in.unverified_credential().signature_key),
@@ -648,13 +675,17 @@ impl MlsSwarmLogic for MlsEngine {
             },
         }
     }
+
+    fn credential_present_in_group(&self, credential: Credential) -> bool {
+        self.group.members().any(|m| m.credential == credential)
+    }
 }
 
 pub trait MlsAutomaticRemoval {
     fn have_pending_removals(&self) -> bool;
     fn remove_pending(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error>;
     fn schedule_removal(&mut self, node_ids: Vec<u32>);
-    fn get_leaf_index_from_id(&mut self, id: u32) -> Result<LeafNodeIndex, Error>;
+    fn get_leaf_index_from_id(&self, group: &MlsGroup, id: u32) -> Result<LeafNodeIndex, Error>;
 }
 
 impl MlsAutomaticRemoval for MlsEngine {
@@ -662,6 +693,8 @@ impl MlsAutomaticRemoval for MlsEngine {
         !self.pending_removals.is_empty()
     }
     fn remove_pending(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
+        // See if we need to remove from anyone we haven't heard of
+
         let (group_commit, welcome_option, _group_info) = self
             .group
             .remove_members(&self.provider, &self.signature_key, &self.pending_removals)
@@ -697,7 +730,7 @@ impl MlsAutomaticRemoval for MlsEngine {
 
     fn schedule_removal(&mut self, node_ids: Vec<u32>) {
         for target_id in node_ids {
-            match self.get_leaf_index_from_id(target_id) {
+            match self.get_leaf_index_from_id(self.group(), target_id) {
                 Ok(index) => {
                     self.pending_removals.push(index);
                 }
@@ -712,8 +745,12 @@ impl MlsAutomaticRemoval for MlsEngine {
         }
     }
 
-    fn get_leaf_index_from_id(&mut self, target_id: u32) -> Result<LeafNodeIndex, Error> {
-        for member in self.group().members() {
+    fn get_leaf_index_from_id(
+        &self,
+        group: &MlsGroup,
+        target_id: u32,
+    ) -> Result<LeafNodeIndex, Error> {
+        for member in group.members() {
             let id_match = match member.credential.credential_type() {
                 CredentialType::Basic => {
                     let cred = BasicCredential::try_from(member.credential.clone())
@@ -752,20 +789,94 @@ impl MlsAutomaticRemoval for MlsEngine {
 }
 
 pub trait MlsGroupDiscovery {
-    fn is_forever_alone(&self) -> bool;
+    fn get_group_state(&self) -> MlsSwarmState;
+    fn contains_gcs(&self, group: &MlsGroup) -> bool;
+    fn should_join(&self, group_to_join: &MlsGroup) -> bool;
+    fn min_node_id(group: &MlsGroup) -> Option<u32>;
 }
 
 impl MlsGroupDiscovery for MlsEngine {
-    /*
-    We wont receive our own remove as this implies that we have lost connection to the swarm.
-    I.e., to check if we have an operational group, we need to check if we are the only node left in the Mls group.
-    This is also why all entities start with a group.
-    The rule is that the smaller group will merge with the larger.
-    */
-    fn is_forever_alone(&self) -> bool {
-        self.group
+    fn get_group_state(&self) -> MlsSwarmState {
+        // Could possibly cache this state to avoid checking every time, and then just update state whenever we see group changes.
+        if self.contains_gcs(self.group()) {
+            MlsSwarmState::MainGroup
+        } else if self.group.members().count() == 1 {
+            MlsSwarmState::Alone
+        } else {
+            MlsSwarmState::SubGroup
+        }
+    }
+
+    fn contains_gcs(&self, group: &MlsGroup) -> bool {
+        self.get_leaf_index_from_id(group, self.config.gcs_id)
+            .is_ok()
+    }
+
+    fn should_join(&self, group_to_join: &MlsGroup) -> bool {
+        if self.config.node_id == self.config.gcs_id || self.contains_gcs(self.group()) {
+            log::debug!(
+                "[MlsEngine] Received Welcome but current group contains GCS. Discarding Welcome."
+            );
+            return false;
+        }
+
+        // Check if future group contains GCS
+        if self.contains_gcs(group_to_join) {
+            log::debug!("[MlsEngine] Group from Welcome contained GCS ");
+            return true;
+        }
+
+        // If we are alone, we join anyway
+        let own_size = self.group.members().count();
+        if own_size == 1 {
+            return true;
+        }
+
+        // Check if future group is larger than current group
+        let other_size = group_to_join.members().count() - 1; // They have added you
+        if own_size < other_size {
+            log::debug!("[MlsEngine] No GCS present. Group from Welcome  were larger than our own group. Joining.");
+            return true;
+        }
+
+        // Check if groups are equal in size.
+        // If so, find lowest id in group and join that.
+        if own_size == other_size {
+            let own_min = Self::min_node_id(self.group());
+            let other_min = Self::min_node_id(group_to_join);
+
+            if other_min < own_min {
+                log::debug!("[MlsEngine] Groups equal in size. Other group had lower min node ID.");
+                return true;
+            } else {
+                log::debug!("[MlsEngine] Groups equal in size. Our group has lower min node ID.");
+                return false;
+            }
+        }
+
+        log::debug!("[MlsEngine] Received Welcome for a subgroup smaller than ours. Discarding.");
+        return false;
+    }
+
+    fn min_node_id(group: &MlsGroup) -> Option<u32> {
+        group
             .members()
-            .any(|m| m.credential != self.credential_with_key.credential)
+            .filter_map(|member| match member.credential.credential_type() {
+                CredentialType::Basic => BasicCredential::try_from(member.credential.clone())
+                    .ok()
+                    .map(|cred| {
+                        u32::from_le_bytes(
+                            cred.identity()[..4]
+                                .try_into()
+                                .expect("Error converting Basic Identity to u32."),
+                        )
+                    }),
+                CredentialType::Other(_) => Ed25519credential::try_from(member.credential.clone())
+                    .ok()
+                    .map(|cred| cred.credential_data.identity),
+                _ => None,
+            })
+            .min()
     }
 }
 
