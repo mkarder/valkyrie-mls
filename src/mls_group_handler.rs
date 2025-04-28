@@ -713,6 +713,7 @@ fn generate_key_package(
 
 fn generate_group_config() -> MlsGroupJoinConfig {
     MlsGroupJoinConfig::builder()
+        .max_past_epochs(1)  //Increase max past epochs stored 
         .padding_size(0)
         .sender_ratchet_configuration(SenderRatchetConfiguration::new(
             5,   // out_of_order_tolerance
