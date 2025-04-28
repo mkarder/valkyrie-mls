@@ -179,27 +179,20 @@ impl MlsSwarmLogic for MlsEngine {
         &mut self,
         mut buf: &[u8],
     ) -> Result<Vec<u8>, MlsEngineError> {
-        /*
-        let message_in =
-            MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
-        */
+        // Deserialize incoming TLS message
+        let message_in = MlsMessageIn::tls_deserialize(&mut buf).map_err(|e| {
+            log::error!("[Router] Error deserializing TLS message: {:?}", e);
+            MlsEngineError::TlsSerializationError
+        })?;
 
-        let message_in = MlsMessageIn::tls_deserialize(&mut buf);
-        match message_in {
-            Ok(_) => {}
-            Err(e) => {
-                log::error!("[Router] Error deserializing TLS message: {:?}", e);
-                return Err(MlsEngineError::TlsSerializationError);
-            }
-        }
-        let message_in = message_in.unwrap();
         match message_in.extract() {
             MlsMessageBodyIn::PublicMessage(msg) => {
-                let processed_message = self
+                let processed = self
                     .group
                     .process_message(&self.provider, msg)
-                    .expect("[MlsEngine] Error processing message");
-                match processed_message.into_content() {
+                    .map_err(|_| MlsEngineError::ProcessMessageError)?;
+
+                match processed.into_content() {
                     ProcessedMessageContent::ApplicationMessage(payload) => {
                         let content_bytes = payload.into_bytes();
                         let preview = std::str::from_utf8(&content_bytes)
@@ -208,36 +201,54 @@ impl MlsSwarmLogic for MlsEngine {
                         log::info!("[MlsEngine] Decrypted application message: {}", preview);
                         Ok(content_bytes)
                     }
-                    ProcessedMessageContent::ExternalJoinProposalMessage(_)
-                    | ProcessedMessageContent::StagedCommitMessage(_)
-                    | ProcessedMessageContent::ProposalMessage(_) => {
-                        Err(MlsEngineError::ProposalOverApplicationChannel)
-                    }
+                    _ => Err(MlsEngineError::ProposalOverApplicationChannel),
                 }
             }
+
             MlsMessageBodyIn::PrivateMessage(msg) => {
-                let processed_message = self.group.process_message(&self.provider, msg)?;
+                match self.group.process_message(&self.provider, msg.clone()) {
+                    Ok(processed) => {
+                        if let Sender::Member(leaf_index) = processed.sender() {
+                            self.last_received.insert(*leaf_index, SystemTime::now());
+                        }
 
-                if let Sender::Member(leaf_index) = processed_message.sender() {
-                    self.last_received.insert(*leaf_index, SystemTime::now());
-                }
+                        match processed.into_content() {
+                            ProcessedMessageContent::ApplicationMessage(payload) => {
+                                let content_bytes = payload.into_bytes();
+                                let preview = std::str::from_utf8(&content_bytes)
+                                    .map(|text| &text[..text.len().min(50)])
+                                    .unwrap_or("<non-UTF8 data>");
+                                log::info!(
+                                    "[MlsEngine] Decrypted application message: {}",
+                                    preview
+                                );
+                                Ok(content_bytes)
+                            }
+                            _ => Err(MlsEngineError::ProposalOverApplicationChannel),
+                        }
+                    }
 
-                match processed_message.into_content() {
-                    ProcessedMessageContent::ApplicationMessage(payload) => {
-                        let content_bytes = payload.into_bytes();
-                        let preview = std::str::from_utf8(&content_bytes)
-                            .map(|text| &text[..text.len().min(50)])
-                            .unwrap_or("<non-UTF8 data>");
-                        log::info!("[MlsEngine] Decrypted application message: {}", preview);
-                        Ok(content_bytes)
-                    }
-                    ProcessedMessageContent::ExternalJoinProposalMessage(_)
-                    | ProcessedMessageContent::StagedCommitMessage(_)
-                    | ProcessedMessageContent::ProposalMessage(_) => {
-                        Err(MlsEngineError::ProposalOverApplicationChannel)
-                    }
+                    Err(e) => match e {
+                        ProcessMessageError::ValidationError(val_error) => match val_error {
+                            ValidationError::WrongEpoch => {
+                                match Self::extract_epoch_from_private_message(&msg) {
+                                    Some(epoch) if self.group.epoch().as_u64() < epoch => {
+                                        Err(MlsEngineError::TrailingEpoch)
+                                    }
+                                    Some(_) => Err(MlsEngineError::FutureEpoch),
+                                    None => {
+                                        log::warn!("Could not extract epoch from PrivateMessage.");
+                                        Err(MlsEngineError::ValidationError)
+                                    }
+                                }
+                            }
+                            _ => Err(MlsEngineError::ValidationError),
+                        },
+                        _ => Err(MlsEngineError::from(e)),
+                    },
                 }
             }
+
             MlsMessageBodyIn::Welcome(_) => Err(MlsEngineError::WelcomeOverApplicationChannel),
             MlsMessageBodyIn::GroupInfo(_) => Err(MlsEngineError::GroupInfoOverApplicationChannel),
             MlsMessageBodyIn::KeyPackage(_) => {
@@ -765,14 +776,12 @@ impl MlsAutomaticRemoval for MlsEngine {
         }
     }
 
-
     fn get_leaf_index_from_id(
         &self,
         group: &MlsGroup,
         target_id: u32,
     ) -> Result<LeafNodeIndex, Error> {
         for member in group.members() {
-
             let id_match = match member.credential.credential_type() {
                 CredentialType::Basic => {
                     let cred = BasicCredential::try_from(member.credential.clone())
@@ -950,6 +959,53 @@ impl MlsGroupDiscovery for MlsEngine {
     }
 }
 
+pub trait MlsGroupReset {
+    fn reset_group(&mut self);
+    fn extract_epoch_from_private_message(message: &PrivateMessageIn) -> Option<u64>;
+}
+
+impl MlsGroupReset for MlsEngine {
+    fn reset_group(&mut self) {
+        let (_credential_type, capabilities) =
+            match self.config.credential_type.to_lowercase().as_str() {
+                "basic" => (CredentialType::Basic, capabilities("basic")),
+                "x509" => (CredentialType::X509, capabilities("x509")),
+                "ed25519" => (CredentialType::Other(0xF000), capabilities("ed25519")),
+                other => panic!(
+                    "Cannot initialize Mls Component. Unsupported credential type: {}",
+                    other
+                ),
+            };
+        self.group = MlsGroup::new(
+            &self.provider,
+            &self.signature_key,
+            &generate_group_create_config(capabilities.clone()),
+            self.credential_with_key.clone(),
+        )
+        .expect("Error creating group");
+    }
+
+    fn extract_epoch_from_private_message(message: &PrivateMessageIn) -> Option<u64> {
+        let serialized = message.tls_serialize_detached().ok()?;
+        let mut cursor = serialized.as_slice();
+
+        // Parse the GroupId length prefix (2 bytes, u16)
+        let group_id_len = u16::tls_deserialize(&mut cursor).ok()? as usize;
+
+        // Skip the GroupId bytes
+        if cursor.len() < group_id_len {
+            return None;
+        }
+        let (_group_id_bytes, rest) = cursor.split_at(group_id_len);
+        cursor = rest;
+
+        // Now the next 8 bytes are the epoch (u64)
+        let epoch = u64::tls_deserialize(&mut cursor).ok()?;
+
+        Some(epoch)
+    }
+}
+
 fn generate_credential_with_key(
     identity: u32,
     credential_type: CredentialType,
@@ -1096,9 +1152,10 @@ pub enum MlsEngineError {
     UnauthorizedExternalApplicationMessage,
     ValidationError,
     WrongGroupId,
-    WrongEpoch,
+    FutureEpoch,
     UnknownMember,
     ProcessMessageError,
+    TrailingEpoch,
 }
 
 impl From<ProcessMessageError> for MlsEngineError {
@@ -1110,7 +1167,7 @@ impl From<ProcessMessageError> for MlsEngineError {
             ProcessMessageError::UnsupportedProposalType => Self::ProposalOverApplicationChannel,
             ProcessMessageError::ValidationError(e) => match e {
                 ValidationError::WrongGroupId => Self::WrongGroupId,
-                ValidationError::WrongEpoch => Self::WrongGroupId,
+                ValidationError::WrongEpoch => Self::FutureEpoch,
                 ValidationError::UnknownMember => Self::UnknownMember,
                 _ => Self::ValidationError,
             },
@@ -1123,39 +1180,40 @@ impl fmt::Display for MlsEngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let description = match self {
             MlsEngineError::TlsSerializationError => {
-                "Error serializing or deserializing using tls_codec."
-            }
+                        "Error serializing or deserializing using tls_codec."
+                    }
             MlsEngineError::ProposalOverApplicationChannel => {
-                "Proposals are not allowed to be sent over the application channel."
-            }
+                        "Proposals are not allowed to be sent over the application channel."
+                    }
             MlsEngineError::CommitOverApplicationChannel => {
-                "Commits are not allowed to be sent over the application channel."
-            }
+                        "Commits are not allowed to be sent over the application channel."
+                    }
             MlsEngineError::WelcomeOverApplicationChannel => {
-                "Welcome messages are not allowed to be sent over the application channel."
-            }
+                        "Welcome messages are not allowed to be sent over the application channel."
+                    }
             MlsEngineError::GroupInfoOverApplicationChannel => {
-                "GroupInfo messages are not allowed to be sent over the application channel."
-            }
+                        "GroupInfo messages are not allowed to be sent over the application channel."
+                    }
             MlsEngineError::KeyPackageOverApplicationChannel => {
-                "KeyPackage messages are not allowed to be sent over the application channel."
-            }
+                        "KeyPackage messages are not allowed to be sent over the application channel."
+                    }
             MlsEngineError::UnauthorizedExternalApplicationMessage => {
-                "External application messages are not permitted without proper authorization."
-            }
+                        "External application messages are not permitted without proper authorization."
+                    }
             MlsEngineError::ValidationError => {
-                "Validation of the incoming message or content failed."
-            }
+                        "Validation of the incoming message or content failed."
+                    }
             MlsEngineError::WrongGroupId => "The message was intended for a different group ID.",
-            MlsEngineError::WrongEpoch => {
-                "The message was created for a different epoch than the current group epoch."
-            }
+            MlsEngineError::FutureEpoch => {
+                        "The message was created for a different, future epoch than the current group epoch."
+                    }
             MlsEngineError::UnknownMember => {
-                "The message originated from an unknown member not recognized in the current group."
-            }
+                        "The message originated from an unknown member not recognized in the current group."
+                    }
             MlsEngineError::ProcessMessageError => {
-                "An unexpected error occurred while processing the MLS message."
-            }
+                        "An unexpected error occurred while processing the MLS message."
+                    }
+            MlsEngineError::TrailingEpoch => {"The message was created for a different, trailing epoch than the current group epoch."},
         };
         write!(f, "{}", description)
     }
