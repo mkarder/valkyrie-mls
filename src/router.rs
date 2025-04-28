@@ -1,5 +1,6 @@
 use crate::mls_group_handler::{
-    MlsAutomaticRemoval, MlsEngineError, MlsGroupDiscovery, MlsSwarmLogic, MlsSwarmState,
+    MlsAutomaticRemoval, MlsEngineError, MlsGroupDiscovery, MlsGroupReset, MlsSwarmLogic,
+    MlsSwarmState,
 };
 
 use crate::config::RouterConfig;
@@ -433,6 +434,13 @@ impl Router {
                 // Event loop: check for removals, adds and conduct updates based on current status.
                 _ = update_interval.tick() => {
                     log::debug!("⏰ Scheduled Update Cycle scheduled self-update...");
+                    if let Some(started_at) = self.wrong_epoch_timer {
+                        if started_at.elapsed() >= self.wrong_epoch_timeout {
+                            log::error!("WrongEpoch timer expired! Resetting MLS group.");
+                            self.mls_group_handler.reset_group();
+                            self.wrong_epoch_timer = None; // Reset the timer after recovering
+                        }
+                    }
                     match self.mls_group_handler.get_mls_group_state() {
                         MlsSwarmState::Alone => {
                             match self.mls_group_handler.get_key_package() {
