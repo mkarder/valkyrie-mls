@@ -6,8 +6,9 @@ use valkyrie_mls::mls_group_handler::{
     MlsAutomaticRemoval, MlsEngine, MlsGroupDiscovery, MlsSwarmLogic,
 };
 
-/// Alice   <--> ID 9999
+/// Alice   <--> ID 7777
 /// Bob     <--> ID 8888
+/// Charlie <--> ID 9999
 /// Alice has a self-signed, valid Ed25519 Credential.
 /// Bob has a valid Ed25519 Credential signed by Alice.
 
@@ -32,7 +33,7 @@ fn test_mls_group_operations() {
     let alice_config = MlsConfig {
         gcs_id: 1,
         credential_type: "Basic".to_string(),
-        node_id: 9999,
+        node_id: 7777,
         update_interval_secs: 100,
     };
 
@@ -46,7 +47,7 @@ fn test_mls_group_operations() {
     let charlie_config = MlsConfig {
         gcs_id: 1,
         credential_type: "Basic".to_string(),
-        node_id: 7777,
+        node_id: 9999,
         update_interval_secs: 100,
     };
 
@@ -57,6 +58,9 @@ fn test_mls_group_operations() {
     let mut alice_mls_engine = MlsEngine::new(alice_config);
     let mut bob_mls_engine = MlsEngine::new(bob_config);
     let mut charlie_mls_engine = MlsEngine::new(charlie_config);
+    alice_mls_engine.update_totem_group(vec![7777, 8888, 9999]);
+    bob_mls_engine.update_totem_group(vec![7777, 8888, 9999]);
+    charlie_mls_engine.update_totem_group(vec![7777, 8888, 9999]);
 
     // === Alice receives Bob's key package ===
     let bob_key_package_bytes = bob_mls_engine.get_key_package().unwrap();
@@ -265,7 +269,7 @@ fn test_mls_operations_with_ed25519_credential() {
     let alice_config = MlsConfig {
         gcs_id: 1,
         credential_type: "ed25519".to_string(),
-        node_id: 9999,
+        node_id: 7777,
         update_interval_secs: 100,
     };
 
@@ -279,6 +283,8 @@ fn test_mls_operations_with_ed25519_credential() {
     // Generate two MLS Engines
     let mut alice_mls_engine = MlsEngine::new(alice_config);
     let mut bob_mls_engine = MlsEngine::new(bob_config);
+    alice_mls_engine.update_totem_group(vec![7777, 8888]);
+    bob_mls_engine.update_totem_group(vec![7777, 8888]);
 
     // === Alice receives Bob's key package ===
     let bob_key_package_bytes = bob_mls_engine.get_key_package().unwrap();
@@ -306,7 +312,7 @@ fn test_mls_operations_with_ed25519_credential() {
     let (_group_commit, bob_welcome) = alice_mls_engine
         .add_pending_key_packages()
         .unwrap()
-        .expect("Expected key packages to be available");
+        .expect("Expected Welcome for Bob to be available");
 
     assert_eq!(
         alice_mls_engine.group().members().count(),
@@ -347,11 +353,11 @@ fn test_mls_operations_with_ed25519_credential() {
 
 #[test]
 fn test_basic_credential_identity_matching() {
-    // Generate Alice (9999) and Bob (8888)
+    // Generate Alice (7777) and Bob (8888)
     let config = MlsConfig {
         gcs_id: 1,
         credential_type: "Basic".to_string(),
-        node_id: 9999,
+        node_id: 7777,
         update_interval_secs: 100,
     };
 
@@ -363,7 +369,7 @@ fn test_basic_credential_identity_matching() {
         node_id: 8888,
         update_interval_secs: 100,
     };
-    let bob = MlsEngine::new(bob_config.clone());
+    let mut bob = MlsEngine::new(bob_config.clone());
 
     let bob_key_package_bytes = bob.get_key_package().unwrap();
     alice
@@ -389,11 +395,11 @@ fn test_basic_credential_identity_matching() {
 
 #[test]
 fn test_ed25519_credential_identity_matching() {
-    // Generate Alice (9999) and Bob (8888)
+    // Generate Alice (7777) and Bob (8888)
     let config = MlsConfig {
         gcs_id: 1,
         credential_type: "ed25519".to_string(),
-        node_id: 9999,
+        node_id: 7777,
         update_interval_secs: 100,
     };
 
@@ -405,7 +411,7 @@ fn test_ed25519_credential_identity_matching() {
         node_id: 8888,
         update_interval_secs: 100,
     };
-    let bob = MlsEngine::new(bob_config.clone());
+    let mut bob = MlsEngine::new(bob_config.clone());
 
     let bob_key_package_bytes = bob.get_key_package().unwrap();
     alice
@@ -429,19 +435,19 @@ fn test_ed25519_credential_identity_matching() {
 
 #[test]
 fn test_min_node_id_with_basic_credentials() {
-    // Alice group (only Alice with node_id 9999)
+    // Alice group (only Alice with node_id 7777)
     let config_alice = MlsConfig {
         gcs_id: 1,
         credential_type: "Basic".to_string(),
-        node_id: 9999,
+        node_id: 7777,
         update_interval_secs: 100,
     };
     let alice = MlsEngine::new(config_alice);
     let alice_min =
         MlsEngine::min_node_id(alice.group()).expect("Expected a min ID in Alice's group");
-    assert_eq!(alice_min, 9999);
+    assert_eq!(alice_min, 7777);
 
-    // Bob group (Bob and Charlie with node_ids 8888 and 7777)
+    // Bob group (Bob and Charlie with node_ids 8888 and 9999)
     let config_bob = MlsConfig {
         gcs_id: 1,
         credential_type: "Basic".to_string(),
@@ -450,17 +456,17 @@ fn test_min_node_id_with_basic_credentials() {
     };
     let mut bob = MlsEngine::new(config_bob);
 
-    let config_carol = MlsConfig {
+    let config_charlie = MlsConfig {
         gcs_id: 1,
         credential_type: "Basic".to_string(),
-        node_id: 7777,
+        node_id: 9999,
         update_interval_secs: 100,
     };
-    let carol = MlsEngine::new(config_carol);
+    let mut charlie = MlsEngine::new(config_charlie);
 
     // Bob processes Charlies's key package
-    let carol_key_pkg = carol.get_key_package().unwrap();
-    bob.process_incoming_delivery_service_message(&carol_key_pkg)
+    let charlie_key_pkg = charlie.get_key_package().unwrap();
+    bob.process_incoming_delivery_service_message(&charlie_key_pkg)
         .unwrap();
     bob.add_pending_key_packages().unwrap();
 
@@ -470,7 +476,7 @@ fn test_min_node_id_with_basic_credentials() {
         "Expected Bob to have added Charlie"
     );
     let bob_min = MlsEngine::min_node_id(bob.group()).expect("Expected a min ID in Bob's group");
-    assert_eq!(bob_min, 7777); // Charlie should be the min
+    assert_eq!(bob_min, 8888); // Charlie should be the min
 }
 
 #[test]
@@ -506,48 +512,60 @@ fn test_tiebreaker_join_withouth_gcs_basic_credential() {
     let mut node4 = MlsEngine::new(config_4);
     let mut node5 = MlsEngine::new(config_5);
 
+    let nodes = vec![&mut node2, &mut node3, &mut node4, &mut node5];
+
+    // Update the totem group status
+    for node in nodes {
+        node.update_totem_group(vec![2, 3, 4, 5]);
+    }
+
     // === Setup: create two initial groups of the same size ===
-    // Node 2 and 5 merge to one group
+    // Node 2 and 5 merge to one group. 5 Should join 2, not vthe other way around.
     let kp_2 = node2.get_key_package().unwrap();
     node5
         .process_incoming_delivery_service_message(&kp_2)
         .unwrap();
-    let (_commit, fivewelcometwo) = node5
+    assert!(
+        node5.add_pending_key_packages().unwrap().is_none(),
+        "5 Should not add 2. Result of add operation should be None.",
+    );
+
+    assert_eq!(
+        node5.group().members().count(),
+        1,
+        "Group size of 5 should remain 1."
+    );
+
+    let kp_5 = node5.get_key_package().unwrap();
+    node2
+        .process_incoming_delivery_service_message(&kp_5)
+        .unwrap();
+    let (_commit, twowelcomefive) = node2
         .add_pending_key_packages()
         .unwrap()
         .expect("Expected Add operation to result in a commit and welcome");
 
-    let _ = node2.process_incoming_delivery_service_message(&fivewelcometwo);
-    assert_eq!(
-        node2.group().members().count(),
-        2,
-        "Node 2 should join 5, as it is the only node in its group."
-    );
-    assert_eq!(node5.group().members().count(), 2, "Node 2 should join 5");
+    let _ = node5.process_incoming_delivery_service_message(&twowelcomefive);
     assert!(
         node2.group().members().eq(node5.group().members()),
         "Node 2 should join 5"
     );
 
-    // Node 3 and 4 merge
-    let kp_3 = node3.get_key_package().unwrap();
-    node4
-        .process_incoming_delivery_service_message(&kp_3)
+    // Node 3 adds node 4 to its group
+    let kp_4 = node4.get_key_package().unwrap();
+    node3
+        .process_incoming_delivery_service_message(&kp_4)
         .unwrap();
-    let (_commit, welcome) = node4
+    let (_commit, threewelcomefour) = node3
         .add_pending_key_packages()
         .unwrap()
         .expect("Expected Add operation to result in a commit and welcome");
 
-    let _ = node3.process_incoming_delivery_service_message(&welcome);
-    assert_eq!(
-        node3.group().members().count(),
-        2,
-        "Node 3 should join 4, as it is the only node in its group."
-    );
+    let _ = node4.process_incoming_delivery_service_message(&threewelcomefour);
+    assert_eq!(node4.group().members().count(), 2, "Node 4 should join 3.");
     assert!(
         node3.group().members().eq(node4.group().members()),
-        "Node 3 should join 4"
+        "Node 3 and node 4 should show the same group."
     );
 
     // === Merge two groups of equal size ===
@@ -557,68 +575,454 @@ fn test_tiebreaker_join_withouth_gcs_basic_credential() {
         .process_incoming_delivery_service_message(&kp_2)
         .unwrap();
 
+    assert!(
+        node3.add_pending_key_packages().unwrap().is_none(),
+        "3 Should not add 2. Result of add operation should be None.",
+    );
+
+    let kp_5 = node5.get_key_package().unwrap();
+    node4
+        .process_incoming_delivery_service_message(&kp_2)
+        .unwrap();
+    node4
+        .process_incoming_delivery_service_message(&kp_5)
+        .unwrap();
+
+    assert!(
+        node4.add_pending_key_packages().unwrap().is_none(),
+        "4 Should not add 2 and 5, even though this constitues the full group. Result of add operation should be None.",
+    );
+
+    let kp_3 = node3.get_key_package().unwrap();
+    let kp_4 = node4.get_key_package().unwrap();
+    node5
+        .process_incoming_delivery_service_message(&kp_3)
+        .unwrap();
+
+    node5
+        .process_incoming_delivery_service_message(&kp_4)
+        .unwrap();
+
+    let (commit3and4, welcome3and4) = node5
+        .add_pending_key_packages()
+        .unwrap()
+        .expect("Expected Add operation to result in a commit and welcome");
+
+    node2
+        .process_incoming_delivery_service_message(&commit3and4)
+        .unwrap();
+
+    node3
+        .process_incoming_delivery_service_message(&welcome3and4)
+        .unwrap();
+
+    assert!(
+        node3.group().members().eq(node2.group().members()),
+        "Node 2 and 3 should show the same group."
+    );
+
+    node4
+        .process_incoming_delivery_service_message(&welcome3and4)
+        .unwrap();
+
+    assert!(
+        node5.group().members().eq(node4.group().members()),
+        "Node 5 and 4 should show the same group."
+    );
+}
+
+#[test]
+fn test_majority_group_join_withouth_gcs_basic_credential() {
+    // Create engines with IDs 2, 3, 4, and 5
+    let config_2 = MlsConfig {
+        gcs_id: 1,
+        credential_type: "Basic".to_string(),
+        node_id: 2,
+        update_interval_secs: 100,
+    };
+    let config_3 = MlsConfig {
+        gcs_id: 1,
+        credential_type: "Basic".to_string(),
+        node_id: 3,
+        update_interval_secs: 100,
+    };
+    let config_4 = MlsConfig {
+        gcs_id: 1,
+        credential_type: "Basic".to_string(),
+        node_id: 4,
+        update_interval_secs: 100,
+    };
+    let config_5 = MlsConfig {
+        gcs_id: 1,
+        credential_type: "Basic".to_string(),
+        node_id: 5,
+        update_interval_secs: 100,
+    };
+
+    let mut node2 = MlsEngine::new(config_2);
+    let mut node3 = MlsEngine::new(config_3);
+    let mut node4 = MlsEngine::new(config_4);
+    let mut node5 = MlsEngine::new(config_5);
+
+    let nodes = vec![&mut node2, &mut node3, &mut node4, &mut node5];
+
+    // Update the totem group status
+    for node in nodes {
+        node.update_totem_group(vec![2, 3, 4, 5]);
+    }
+
+    // === Setup: Create two groups of unequal size [{2}, {3, 4, 5}] ===
+    let kp_4 = node4.get_key_package().unwrap();
+    let kp_5 = node5.get_key_package().unwrap();
+    node3
+        .process_incoming_delivery_service_message(&kp_4)
+        .unwrap();
+    node3
+        .process_incoming_delivery_service_message(&kp_5)
+        .unwrap();
     let (_commit, welcome) = node3
         .add_pending_key_packages()
         .unwrap()
         .expect("Expected Add operation to result in a commit and welcome");
 
-    let _ = node2.process_incoming_delivery_service_message(&welcome);
-    assert_eq!(
-        node2.group().members().count(),
-        2,
-        "Node 2 should not join the group, as they have the same size but the MIN ID of the group is higher."
+    let _ = node4.process_incoming_delivery_service_message(&welcome);
+    let _ = node5.process_incoming_delivery_service_message(&welcome);
+    assert!(
+        node3.group().members().eq(node4.group().members()),
+        "Node 4 should join 3"
     );
-    assert_eq!(
-        node3.group().members().count(),
-        3,
-        "Node 3 should have added Node 2 anyway."
+    assert!(
+        node3.group().members().eq(node5.group().members()),
+        "Node 5 should join 3"
     );
 
+    // Node 3 should not join node 2
     let kp_3 = node3.get_key_package().unwrap();
     node2
         .process_incoming_delivery_service_message(&kp_3)
         .unwrap();
 
-    let (commit, welcome) = node2
-        .add_pending_key_packages()
-        .unwrap()
-        .expect("Expected Add operation to result in a commit and welcome");
+    let (_commit, welcome3) = node2.add_pending_key_packages().unwrap().expect(
+        "Expected add operation to add in welocme. 2 is not awarte of current group size of 3.",
+    );
 
-    let _ = node3.process_incoming_delivery_service_message(&welcome);
-    let _ = node5.process_incoming_delivery_service_message(&commit);
+    node3
+        .process_incoming_delivery_service_message(&welcome3)
+        .unwrap();
 
-    println!("\n #### Members of node 3: ####");
-    for m in node3.group().members() {
-        println!("{:?}", m.credential.serialized_content());
-    }
+    assert_eq!(
+        node3.group().members().count(),
+        3,
+        "3 should not accept Welcome from 2."
+    );
+
+    // Node 2 should join the majority group consisting of {3, 4, 5}
+    let kp_2 = node2.get_key_package().unwrap();
+    node3
+        .process_incoming_delivery_service_message(&kp_2)
+        .unwrap();
+
+    let (commit2, welcome2) = node3.add_pending_key_packages().unwrap().expect(
+        "Expected add operation to add in welocme. 2 is not awarte of current group size of 3.",
+    );
+
+    node2
+        .process_incoming_delivery_service_message(&welcome2)
+        .unwrap();
+
+    node4
+        .process_incoming_delivery_service_message(&commit2)
+        .unwrap();
+
+    node5
+        .process_incoming_delivery_service_message(&commit2)
+        .unwrap();
 
     assert!(
         node3.group().members().eq(node2.group().members()),
-        "Node 3 should join the group."
+        "2 should have joined 3"
+    );
+
+    assert!(
+        node4.group().members().eq(node2.group().members()),
+        "2 should also share group with 4"
+    );
+
+    assert!(
+        node5.group().members().eq(node2.group().members()),
+        "2 should also share group with 5"
+    );
+}
+
+#[test]
+fn test_reject_joins_in_presence_of_gcs_basic_credential() {
+    // This test verifies that only the GCS or members of its MLS group
+    // adds other nodes in the presence of a GCS in the Totem group.
+    let config_gcs = MlsConfig {
+        gcs_id: 1,
+        credential_type: "Basic".to_string(),
+        node_id: 1,
+        update_interval_secs: 100,
+    };
+
+    let config_2 = MlsConfig {
+        gcs_id: 1,
+        credential_type: "Basic".to_string(),
+        node_id: 2,
+        update_interval_secs: 100,
+    };
+    let config_3 = MlsConfig {
+        gcs_id: 1,
+        credential_type: "Basic".to_string(),
+        node_id: 3,
+        update_interval_secs: 100,
+    };
+    let config_4 = MlsConfig {
+        gcs_id: 1,
+        credential_type: "Basic".to_string(),
+        node_id: 4,
+        update_interval_secs: 100,
+    };
+
+    let mut gcs = MlsEngine::new(config_gcs);
+    let mut node2 = MlsEngine::new(config_2);
+    let mut node3 = MlsEngine::new(config_3);
+    let mut node4 = MlsEngine::new(config_4);
+
+    let nodes = vec![&mut gcs, &mut node2, &mut node3, &mut node4];
+
+    // Update Totem Group. Ensure GCS (node1) is present.
+    for node in nodes {
+        node.update_totem_group(vec![1, 2, 3, 4]);
+    }
+
+    // Node 3 and 4 tries to join 2.
+    let kp_3 = node3.get_key_package().unwrap();
+    let kp_4 = node4.get_key_package().unwrap();
+    node2
+        .process_incoming_delivery_service_message(&kp_3)
+        .unwrap();
+    node2
+        .process_incoming_delivery_service_message(&kp_4)
+        .unwrap();
+    assert!(
+        node2.add_pending_key_packages().unwrap().is_none(),
+        "Expected Add operation in node 2 to result in None, as GCS is present in Totem Group."
+    );
+
+    // GCS adds 2, 3, and 4
+    let kp_2 = node2.get_key_package().unwrap();
+    gcs.process_incoming_delivery_service_message(&kp_2)
+        .unwrap();
+
+    gcs.process_incoming_delivery_service_message(&kp_3)
+        .unwrap();
+
+    gcs.process_incoming_delivery_service_message(&kp_4)
+        .unwrap();
+
+    let (_commit, welcome_from_gcs) = gcs
+        .add_pending_key_packages()
+        .unwrap()
+        .expect("Expected GCS' add operation to result in Welcome.");
+
+    node2
+        .process_incoming_delivery_service_message(&welcome_from_gcs)
+        .unwrap();
+    node3
+        .process_incoming_delivery_service_message(&welcome_from_gcs)
+        .unwrap();
+    node4
+        .process_incoming_delivery_service_message(&welcome_from_gcs)
+        .unwrap();
+
+    assert!(
+        gcs.group().members().eq(node2.group().members()),
+        "Node 2 should now be part of GCS group"
     );
     assert!(
-        node3.group().members().eq(node5.group().members()),
-        "Node 5 should also have added Node 3 to the group."
+        gcs.group().members().eq(node3.group().members()),
+        "Node 3 should now be part of GCS group"
+    );
+    assert!(
+        gcs.group().members().eq(node4.group().members()),
+        "Node 4 should now be part of GCS group"
+    );
+}
+
+#[test]
+fn test_larger_groups_join_gcs_basic_credential() {
+    let config_gcs = MlsConfig {
+        gcs_id: 1,
+        credential_type: "Basic".to_string(),
+        node_id: 1,
+        update_interval_secs: 100,
+    };
+
+    let config_2 = MlsConfig {
+        gcs_id: 1,
+        credential_type: "Basic".to_string(),
+        node_id: 2,
+        update_interval_secs: 100,
+    };
+    let config_3 = MlsConfig {
+        gcs_id: 1,
+        credential_type: "Basic".to_string(),
+        node_id: 3,
+        update_interval_secs: 100,
+    };
+    let config_4 = MlsConfig {
+        gcs_id: 1,
+        credential_type: "Basic".to_string(),
+        node_id: 4,
+        update_interval_secs: 100,
+    };
+    let config_5 = MlsConfig {
+        gcs_id: 1,
+        credential_type: "Basic".to_string(),
+        node_id: 5,
+        update_interval_secs: 100,
+    };
+
+    let mut gcs = MlsEngine::new(config_gcs);
+    let mut node2 = MlsEngine::new(config_2);
+    let mut node3 = MlsEngine::new(config_3);
+    let mut node4 = MlsEngine::new(config_4);
+    let mut node5 = MlsEngine::new(config_5);
+
+    let not_gcs = vec![&mut node2, &mut node3, &mut node4, &mut node5];
+
+    // Update Totem group. NB! GCS (node 1) should not be present.
+    for node in not_gcs {
+        node.update_totem_group(vec![2, 3, 4, 5]);
+    }
+
+    // Node 2, 3, 4 join each other
+    let kp_3 = node3.get_key_package().unwrap();
+    let kp_4 = node4.get_key_package().unwrap();
+    node2
+        .process_incoming_delivery_service_message(&kp_3)
+        .unwrap();
+    node2
+        .process_incoming_delivery_service_message(&kp_4)
+        .unwrap();
+    let (_commit, welcome) = node2
+        .add_pending_key_packages()
+        .unwrap()
+        .expect("Expected commit and welcome");
+
+    node3
+        .process_incoming_delivery_service_message(&welcome)
+        .unwrap();
+    node4
+        .process_incoming_delivery_service_message(&welcome)
+        .unwrap();
+
+    assert_eq!(node2.group().members().count(), 3);
+
+    // GCS joins the totem group
+    // Groups: {GCS}, {2, 3, 4}, {5}
+    node2.update_totem_group(vec![1, 2, 3, 4, 5]);
+    node3.update_totem_group(vec![1, 2, 3, 4, 5]);
+    node4.update_totem_group(vec![1, 2, 3, 4, 5]);
+    node5.update_totem_group(vec![1, 2, 3, 4, 5]);
+    gcs.update_totem_group(vec![1, 2, 3, 4, 5]);
+
+    // Node 5 should not join majority group in presence of GCS
+    let kp_5 = node5.get_key_package().unwrap();
+
+    node2
+        .process_incoming_delivery_service_message(&kp_5)
+        .unwrap();
+    assert!(
+        node2.add_pending_key_packages().unwrap().is_none(),
+        "Node 2 should not Add 5 in presence of GCS"
     );
 
-    // // Group 2: node3 and node4
-    // let kp_4 = node4.get_key_package().unwrap();
-    // node3
-    //     .process_incoming_delivery_service_message(&kp_4)
-    //     .unwrap();
-    // node3.add_pending_key_packages().unwrap();
+    // GCS Adds node 2
+    let kp_2 = node2.get_key_package().unwrap();
+    gcs.process_incoming_delivery_service_message(&kp_2)
+        .unwrap();
+    let (_commit, welcome2) = gcs
+        .add_pending_key_packages()
+        .unwrap()
+        .expect("Expected GCS Add operatin to result in Welcome.");
 
-    // // Welcome from group 1 (node2) to group 2 (node3)
-    // let welcome_from_2 = node2.export_welcome().unwrap();
-    // assert!(
-    //     !node3.should_join(&welcome_from_2),
-    //     "Group 2 should not join group 1 because it contains higher min ID"
-    // );
+    node2
+        .process_incoming_delivery_service_message(&welcome2)
+        .unwrap();
+    assert!(
+        gcs.group().members().eq(node2.group().members()),
+        "Expected node 2 to join GCS"
+    );
 
-    // // Welcome from group 2 (node3) to group 1 (node2)
-    // let welcome_from_3 = node3.export_welcome().unwrap();
-    // assert!(
-    //     node2.should_join(&welcome_from_3),
-    //     "Group 1 should join group 2 because it contains lower min ID"
-    // );
+    // Node 2 (now part of MAINGROUP) adds node 5
+    let kp_5 = node5.get_key_package().unwrap();
+    node2
+        .process_incoming_delivery_service_message(&kp_5)
+        .unwrap();
+
+    let (commit5, welcome5) = node2
+        .add_pending_key_packages()
+        .unwrap()
+        .expect("Expected Node 2's Add operatin to result in Welcome.");
+
+    gcs.process_incoming_delivery_service_message(&commit5)
+        .unwrap();
+    node5
+        .process_incoming_delivery_service_message(&welcome5)
+        .unwrap();
+
+    assert!(
+        gcs.group().members().eq(node5.group().members()),
+        "Expected node 5 to join MAINGROUP [GCS, Node2]"
+    );
+
+    // GCS adds 3 and 4
+    let kp_3 = node3.get_key_package().unwrap();
+    let kp_4 = node4.get_key_package().unwrap();
+
+    gcs.process_incoming_delivery_service_message(&kp_3)
+        .unwrap();
+    gcs.process_incoming_delivery_service_message(&kp_4)
+        .unwrap();
+    let (commit34, welcome34) = gcs
+        .add_pending_key_packages()
+        .unwrap()
+        .expect("Expected GCS Add operatin to result in Welcome.");
+
+    node3
+        .process_incoming_delivery_service_message(&welcome34)
+        .unwrap();
+
+    node4
+        .process_incoming_delivery_service_message(&welcome34)
+        .unwrap();
+
+    node2
+        .process_incoming_delivery_service_message(&commit34)
+        .unwrap();
+    node5
+        .process_incoming_delivery_service_message(&commit34)
+        .unwrap();
+
+    // Verify that everybody is in the same group
+    assert!(
+        gcs.group().members().eq(node3.group().members()),
+        "Node 3 should now be part of GCS group"
+    );
+    assert!(
+        node2.group().members().eq(node4.group().members()),
+        "Node 4 should now be part of GCS group"
+    );
+
+    assert!(
+        node4.group().members().eq(node5.group().members()),
+        "Node 4 and 5 should share group"
+    );
+
+    assert!(
+        gcs.group().members().eq(node5.group().members()),
+        "GCS and 5 should share group"
+    );
 }

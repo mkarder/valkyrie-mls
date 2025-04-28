@@ -74,10 +74,9 @@ pub fn confchg_callback(
             ));
         }
 
-        // Inform MLS of current CPG (Totem) Group Size
-        let size = u32::try_from(members_list.iter().count())
-            .expect("[Corosync] group Size exceeded 2^32. Can't convert to u32.");
-        let _ = sig_tx.try_send(CorosyncSignal::MemberSize(size));
+        // Inform MLS of current CPG (Totem) Group composition
+        let group = members_list.iter().map(|a| a.nodeid).collect();
+        let _ = sig_tx.try_send(CorosyncSignal::GroupStatus(group));
     }
 }
 
@@ -98,9 +97,9 @@ pub fn initialize() -> cpg::Handle {
     if let Some(sig_tx) = SIG_CHANNEL.get() {
         match cpg::membership_get(handle, "my_test_group") {
             Ok(members) => {
-                let size = u32::try_from(members.iter().count())
-                    .expect("[Corosync] group Size exceeded 2^32. Can't convert to u32.");
-                let _ = sig_tx.try_send(CorosyncSignal::MemberSize(size));
+                // Inform MLS of current CPG (Totem) Group composition
+                let group = members.iter().map(|a| a.nodeid).collect();
+                let _ = sig_tx.try_send(CorosyncSignal::GroupStatus(group));
             }
             Err(e) => {
                 log::error!(

@@ -1,6 +1,6 @@
 /*
  For test identies, use idienties that begin with 'test', as we remove all these files after tests have concluded.
- If one need to obtain identies, we have saved credentials for Alice (9999) and Bob (8888), for those to test with.
+ If one need to obtain identies, we have saved credentials for Alice (7777) and Bob (8888), for those to test with.
 */
 
 #[cfg(test)]
@@ -71,7 +71,7 @@ mod tests {
             .expect("Error generating a signature key pair.");
 
         let credential_key_bytes = credential_key.public().to_vec(); // Should be 32 bytes
-        let issuer = 9999;
+        let issuer = 7777;
         let not_after = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -106,9 +106,9 @@ mod tests {
 
     #[test]
     fn load_ed25519_keys_from_file() {
-        let subject = 9999; //Alice
-        load_verifying_key_from_file(subject).expect("Error loading verifying key from 9999.pub");
-        load_signing_key_from_file(subject).expect("Error loading signing key from 9999.priv");
+        let subject = 7777; //Alice
+        load_verifying_key_from_file(subject).expect("Error loading verifying key from 7777.pub");
+        load_signing_key_from_file(subject).expect("Error loading signing key from 7777.priv");
     }
 
     #[test]
@@ -136,7 +136,7 @@ mod tests {
         let credential_key = SignatureKeyPair::new(signature_algorithm)
             .expect("Error generating a signature key pair.");
 
-        let issuer = 9999;
+        let issuer = 7777;
         let not_after = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -276,7 +276,7 @@ mod tests {
         // std::fs::remove_file(&credential_path).expect("Failed to delete test credential file");
 
         // Load issuer and key from file then issue credential
-        let ca = 9999;
+        let ca = 7777;
         let subject = 8888;
 
         let issuer = Ed25519Issuer::from_file(ca).expect("Failed to create issuer");

@@ -6,7 +6,7 @@ use openmls::group::MlsGroup;
 use openmls::prelude::{group_info::VerifiableGroupInfo, *};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 use tls_codec::{Deserialize, Serialize};
 
@@ -30,7 +30,7 @@ pub struct MlsEngine {
     capabilities: Capabilities,
     last_received: HashMap<LeafNodeIndex, SystemTime>,
     pending_removals: Vec<LeafNodeIndex>,
-    totem_group_size: u32,
+    totem_group: HashSet<u32>,
 }
 
 pub trait MlsSwarmLogic {
@@ -108,6 +108,10 @@ impl MlsEngine {
 
         let update_interval_secs = config.update_interval_secs;
 
+        // Initialize totem group
+        let mut totem_group = HashSet::new();
+        totem_group.insert(config.node_id);
+
         MlsEngine {
             config,
             group_join_config,
@@ -121,7 +125,7 @@ impl MlsEngine {
             capabilities,
             last_received: HashMap::new(),
             pending_removals: Vec::new(),
-            totem_group_size: 1, // We always start with ourself in a group of 1
+            totem_group, // We always start with ourself in a group of 1
         }
     }
 
@@ -130,7 +134,8 @@ impl MlsEngine {
             .expect("Error loading group")
     }
 
-    pub fn get_key_package(&self) -> Result<Vec<u8>, Error> {
+    pub fn get_key_package(&mut self) -> Result<Vec<u8>, Error> {
+        self.refresh_key_package()?;
         let key_package = MlsMessageOut::from(self.key_package.key_package().clone());
         key_package
             .tls_serialize_detached()
@@ -160,16 +165,16 @@ impl MlsEngine {
         self.update_interval_secs
     }
 
-    pub fn update_totem_group_size(&mut self, size: u32) {
-        self.totem_group_size = size;
+    pub fn update_totem_group(&mut self, group: Vec<u32>) {
+        self.totem_group = group.into_iter().collect(); // Update group
     }
 }
 
 impl MlsSwarmLogic for MlsEngine {
     fn process_incoming_network_message(&mut self, mut buf: &[u8]) -> Result<Vec<u8>, Error> {
         /*
-               let message_in =
-                   MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
+        let message_in =
+            MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
         */
 
         let message_in = MlsMessageIn::tls_deserialize(&mut buf).map_err(|e| {
@@ -414,7 +419,7 @@ impl MlsSwarmLogic for MlsEngine {
             );
             self.last_received.clear(); // Flush old, as we join a new roup.
             self.last_received.insert(sender_index, SystemTime::now());
-            self.refresh_key_package()?;
+            // self.refresh_key_package()?;
 
             return Ok(());
         }
@@ -486,22 +491,31 @@ impl MlsSwarmLogic for MlsEngine {
             return Ok(None);
         }
 
-        let (group_commit, welcome, _group_info) =
-            self.group
-                .add_members(&self.provider, &self.signature_key, &key_packages)?;
+        match self.can_add(&key_packages) {
+            false => {
+                log::debug!("[MlsEngine] Should not add pending key packages. Clearing pending key package list.");
+                self.pending_key_packages.clear();
+                Ok(None)
+            }
+            true => {
+                let (group_commit, welcome, _group_info) =
+                    self.group
+                        .add_members(&self.provider, &self.signature_key, &key_packages)?;
 
-        let group_commit_out = group_commit
-            .tls_serialize_detached()
-            .expect("Error serializing group commit");
+                let group_commit_out = group_commit
+                    .tls_serialize_detached()
+                    .expect("Error serializing group commit");
 
-        let welcome_out = welcome
-            .tls_serialize_detached()
-            .expect("Error serializing welcome");
+                let welcome_out = welcome
+                    .tls_serialize_detached()
+                    .expect("Error serializing welcome");
 
-        let _ = self.group.merge_pending_commit(&self.provider);
-        self.pending_key_packages.clear();
+                let _ = self.group.merge_pending_commit(&self.provider);
+                self.pending_key_packages.clear();
 
-        Ok(Some((group_commit_out, welcome_out)))
+                Ok(Some((group_commit_out, welcome_out)))
+            }
+        }
     }
 
     fn handle_incoming_commit(&mut self, commit: StagedCommit) -> Result<(), Error> {
@@ -789,16 +803,18 @@ impl MlsAutomaticRemoval for MlsEngine {
 }
 
 pub trait MlsGroupDiscovery {
-    fn get_group_state(&self) -> MlsSwarmState;
-    fn contains_gcs(&self, group: &MlsGroup) -> bool;
+    fn get_mls_group_state(&self) -> MlsSwarmState;
+    fn mls_group_contains_gcs(&self, group: &MlsGroup) -> bool;
     fn should_join(&self, group_to_join: &MlsGroup) -> bool;
     fn min_node_id(group: &MlsGroup) -> Option<u32>;
+    fn can_add(&self, to_be_added: &Vec<KeyPackage>) -> bool;
+    fn id_from_key_package(&self, kp: KeyPackage) -> Option<u32>;
 }
 
 impl MlsGroupDiscovery for MlsEngine {
-    fn get_group_state(&self) -> MlsSwarmState {
+    fn get_mls_group_state(&self) -> MlsSwarmState {
         // Could possibly cache this state to avoid checking every time, and then just update state whenever we see group changes.
-        if self.contains_gcs(self.group()) {
+        if self.mls_group_contains_gcs(self.group()) {
             MlsSwarmState::MainGroup
         } else if self.group.members().count() == 1 {
             MlsSwarmState::Alone
@@ -807,55 +823,44 @@ impl MlsGroupDiscovery for MlsEngine {
         }
     }
 
-    fn contains_gcs(&self, group: &MlsGroup) -> bool {
-        self.get_leaf_index_from_id(group, self.config.gcs_id)
-            .is_ok()
+    fn mls_group_contains_gcs(&self, group: &MlsGroup) -> bool {
+        self.config.node_id == self.config.gcs_id
+            || self
+                .get_leaf_index_from_id(group, self.config.gcs_id)
+                .is_ok()
     }
 
     fn should_join(&self, group_to_join: &MlsGroup) -> bool {
-        if self.config.node_id == self.config.gcs_id || self.contains_gcs(self.group()) {
-            log::debug!(
-                "[MlsEngine] Received Welcome but current group contains GCS. Discarding Welcome."
-            );
-            return false;
-        }
-
-        // Check if future group contains GCS
-        if self.contains_gcs(group_to_join) {
-            log::debug!("[MlsEngine] Group from Welcome contained GCS ");
-            return true;
-        }
-
-        // If we are alone, we join anyway
-        let own_size = self.group.members().count();
-        if own_size == 1 {
-            return true;
-        }
-
-        // Check if future group is larger than current group
-        let other_size = group_to_join.members().count() - 1; // They have added you
-        if own_size < other_size {
-            log::debug!("[MlsEngine] No GCS present. Group from Welcome  were larger than our own group. Joining.");
-            return true;
-        }
-
-        // Check if groups are equal in size.
-        // If so, find lowest id in group and join that.
-        if own_size == other_size {
-            let own_min = Self::min_node_id(self.group());
-            let other_min = Self::min_node_id(group_to_join);
-
-            if other_min < own_min {
-                log::debug!("[MlsEngine] Groups equal in size. Other group had lower min node ID.");
-                return true;
-            } else {
-                log::debug!("[MlsEngine] Groups equal in size. Our group has lower min node ID.");
+        match self.get_mls_group_state() {
+            MlsSwarmState::MainGroup => {
+                log::debug!(
+                    "[MlsEngine] Received Welcome but current group contains GCS. Discarding Welcome."
+                );
                 return false;
             }
-        }
+            MlsSwarmState::Alone | MlsSwarmState::SubGroup => {
+                // Check if incoming group contains GCS
+                if self.mls_group_contains_gcs(group_to_join) {
+                    log::debug!("[MlsEngine] Group from Welcome contained GCS ");
+                    return true;
+                }
 
-        log::debug!("[MlsEngine] Received Welcome for a subgroup smaller than ours. Discarding.");
-        return false;
+                // No GCS present. Check if we are a majority group
+                if self.group().members().count() > self.totem_group.len() / 2 {
+                    log::debug!("[MlsEngine] No GCS present. Current is a majority group. Discarding Welcome.");
+                    return false;
+                }
+
+                //
+                if group_to_join.members().count() > self.totem_group.len() / 2 {
+                    log::debug!("[MlsEngine] No GCS present. Group from Welcome were a majority group. Joining.");
+                    return true;
+                }
+
+                // Accept only if sender MIN NODE ID < your MIN NODE ID
+                return Self::min_node_id(group_to_join) < Self::min_node_id(self.group());
+            }
+        }
     }
 
     fn min_node_id(group: &MlsGroup) -> Option<u32> {
@@ -877,6 +882,63 @@ impl MlsGroupDiscovery for MlsEngine {
                 _ => None,
             })
             .min()
+    }
+
+    fn can_add(&self, to_be_added: &Vec<KeyPackage>) -> bool {
+        match self.get_mls_group_state() {
+            MlsSwarmState::MainGroup => true,
+            MlsSwarmState::Alone | MlsSwarmState::SubGroup => {
+                // Check if a GCS is present in the Totem Group
+                if self.totem_group.contains(&self.config.gcs_id) {
+                    return false;
+                }
+
+                // Check if we are a majority group
+                if self.group().members().count() > self.totem_group.len() / 2 {
+                    return true;
+                }
+
+                match Self::min_node_id(self.group()) {
+                    Some(id) => {
+                        let lowest_id_in_mls_group = id;
+
+                        if to_be_added.into_iter().any(|kp| {
+                            self.id_from_key_package(kp.clone()) < Some(lowest_id_in_mls_group)
+                        }) {
+                            // If any of the pending key packages have a higher ID than the lowest in our group
+                            // that implies we should join that group.
+                            return false;
+                        }
+                        // ...else we should add the received key packages
+                        return true;
+                    }
+                    None => {
+                        log::error!("[MlsEngine] Could not resolve MINIMUM GROUP ID. Not allowing to add to thius group.");
+                        false
+                    }
+                }
+            }
+        }
+    }
+
+    fn id_from_key_package(&self, kp: KeyPackage) -> Option<u32> {
+        match kp.leaf_node().credential().credential_type() {
+            CredentialType::Basic => BasicCredential::try_from(kp.leaf_node().credential().clone())
+                .ok()
+                .map(|cred| {
+                    u32::from_le_bytes(
+                        cred.identity()[..4]
+                            .try_into()
+                            .expect("Error converting Basic Identity to u32."),
+                    )
+                }),
+            CredentialType::Other(_) => {
+                Ed25519credential::try_from(kp.leaf_node().credential().clone())
+                    .ok()
+                    .map(|cred| cred.credential_data.identity)
+            }
+            _ => None,
+        }
     }
 }
 
