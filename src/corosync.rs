@@ -1,4 +1,4 @@
-use crate::router::TX_CHANNEL;
+use crate::router::{CorosyncSignal, MLS_HANDSHAKE_CHANNEL, SIG_CHANNEL};
 use rust_corosync::cpg;
 use rust_corosync::cpg::{Address, Guarantee, Handle, Model1Data, Model1Flags, ModelData};
 use rust_corosync::NodeId;
@@ -35,35 +35,41 @@ pub fn deliver_callback(
         msg_len
     );
 
-    if let Some(tx) = TX_CHANNEL.get() {
+    if let Some(tx) = MLS_HANDSHAKE_CHANNEL.get() {
         let msg_vec = msg.to_vec();
         if let Err(e) = tx.try_send(msg_vec) {
-            log::error!("[Corosync] Failed to forward message via TX_CHANNEL: {}", e);
+            log::error!(
+                "[Corosync] Failed to forward message via MLS_HANDSHAKE_CHANNEL: {}",
+                e
+            );
         }
     } else {
-        log::warn!("[Corosync] TX_CHANNEL not initialized, dropping message");
+        log::warn!("[Corosync] MLS_HANDSHAKE_CHANNEL not initialized, dropping message");
     }
 }
 
 /// Callback for membership changes
 pub fn confchg_callback(
     _handle: &Handle,
-    group_name: &str,
-    member_list: Vec<Address>,
+    _group_name: &str,
+    _member_list: Vec<Address>,
     left_list: Vec<Address>,
     joined_list: Vec<Address>,
 ) {
-    log::debug!(
-        "[Corosync] Confchg callback: Group \"{}\" membership changed.",
-        group_name
-    );
-    log::info!("[Corosync] Current members: {} node(s)", member_list.len());
+    log::info!("[Corosync] Nodes joined: {:?}", joined_list);
+    log::info!("[Corosync] Nodes removed: {:?}", left_list);
 
-    if !joined_list.is_empty() {
-        log::info!("[Corosync] Nodes joined: {:?}", joined_list);
-    }
-    if !left_list.is_empty() {
-        log::info!("[Corosync] Nodes left: {:?}", left_list);
+    if let Some(sig_tx) = SIG_CHANNEL.get() {
+        if !joined_list.is_empty() {
+            let _ = sig_tx.try_send(CorosyncSignal::NodeJoined(
+                joined_list.iter().map(|a| a.nodeid).collect(),
+            ));
+        }
+        if !left_list.is_empty() {
+            let _ = sig_tx.try_send(CorosyncSignal::NodeLeft(
+                left_list.iter().map(|a| a.nodeid).collect(),
+            ));
+        }
     }
 }
 

@@ -19,7 +19,7 @@ pub struct RouterConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct MlsConfig {
-    pub node_id: String,
+    pub node_id: u32,
     pub credential_type: String,
     pub update_interval_secs: u64,
 }

@@ -3,7 +3,7 @@
 # Ensure ca.priv and ca.pub are present in the authentication/keys directory 
 set -e
 
-CA="ca"
+CA="9999"
 NODES=("node1" "node2" "node3" "node4")
 
 mkdir -p authentication/keys

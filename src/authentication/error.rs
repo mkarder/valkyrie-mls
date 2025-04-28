@@ -14,6 +14,8 @@ pub enum CredentialError {
     IssuerEncodingError,
     FileReadError,
     FileWriteError,
+    IdentityNotU32,
+    SerializationError,
 }
 
 impl fmt::Display for CredentialError {
@@ -30,6 +32,12 @@ impl fmt::Display for CredentialError {
             CredentialError::IssuerEncodingError => "Failed to encode issuer name",
             CredentialError::FileReadError => "Error reading from file",
             CredentialError::FileWriteError => "Error writing to file",
+            CredentialError::IdentityNotU32 => {
+                "Subject or issuer identity could not be parsed as u32"
+            }
+            CredentialError::SerializationError => {
+                "Error serializing or deserializing credential data"
+            }
         };
         write!(f, "{}", description)
     }

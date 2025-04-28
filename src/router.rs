@@ -1,4 +1,4 @@
-use crate::mls_group_handler::MlsSwarmLogic;
+use crate::mls_group_handler::{MlsAutomaticRemoval, MlsSwarmLogic};
 
 use crate::config::RouterConfig;
 use crate::corosync::receive_message;
@@ -7,6 +7,7 @@ use anyhow::{Context, Error, Result};
 use once_cell::sync::OnceCell;
 use openmls::prelude::LeafNodeIndex;
 use rust_corosync::cpg::Handle;
+use rust_corosync::NodeId;
 use std::env;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
@@ -95,12 +96,26 @@ pub fn parse_command(buffer: &[u8]) -> Result<Command, Error> {
 }
 
 //Global transmission channel for Corosync
-pub static TX_CHANNEL: OnceCell<mpsc::Sender<Vec<u8>>> = OnceCell::new();
+pub static MLS_HANDSHAKE_CHANNEL: OnceCell<mpsc::Sender<Vec<u8>>> = OnceCell::new();
 
 pub fn init_global_channel(tx: mpsc::Sender<Vec<u8>>) {
-    TX_CHANNEL
+    MLS_HANDSHAKE_CHANNEL
         .set(tx)
-        .expect("Global TX_CHANNEL already initialized");
+        .expect("Global MLS_HANDSHAKE_CHANNEL already initialized");
+}
+
+pub static SIG_CHANNEL: OnceCell<mpsc::Sender<CorosyncSignal>> = OnceCell::new();
+
+pub fn init_signal_channel(tx: mpsc::Sender<CorosyncSignal>) {
+    SIG_CHANNEL
+        .set(tx)
+        .expect("Global SIG_CHANNEL already initialized");
+}
+
+#[derive(Debug, Clone)]
+pub enum CorosyncSignal {
+    NodeJoined(Vec<NodeId>),
+    NodeLeft(Vec<NodeId>),
 }
 
 pub struct Router {
@@ -160,7 +175,6 @@ impl Router {
 
         log::debug!(
             "[ROUTER] Joined multicast group {} on port {} with local iface ip {}",
-
             self.config.multicast_ip,
             self.config.multicast_port,
             node_ip
@@ -178,9 +192,11 @@ impl Router {
         );
         log::info!("[ROUTER] Socket Creation Completed.");
 
-
         let (tx_corosync_channel, mut rx_corosync_channel) = mpsc::channel::<Vec<u8>>(32);
         init_global_channel(tx_corosync_channel);
+
+        let (tx_corosync_signal, mut rx_corosync_signal) = mpsc::channel::<CorosyncSignal>(16);
+        init_signal_channel(tx_corosync_signal);
 
         let handle_clone = self.corosync_handle.clone();
         thread::spawn(move || {
@@ -215,6 +231,26 @@ impl Router {
                         }
                         Err(e) => {
                             log::error!("[ROUTER] Error processing incoming delivery service message: {}", e);
+                        }
+                    }
+                }
+
+                // (Totem) Corosync Membership changes
+                Some(signal) = rx_corosync_signal.recv() => {
+                    match signal {
+                        CorosyncSignal::NodeJoined(node_ids) => {
+                            log::info!("[ROUTER] Notified: Nodes joined: {:?}", node_ids);
+
+
+                            // Optionally trigger a re-sync, broadcast, or re-evaluation
+                        }
+                        CorosyncSignal::NodeLeft(node_ids) => {
+                            log::info!("[ROUTER] Notified: Nodes left: {:?}", node_ids);
+                            if !node_ids.is_empty() {
+                            self.mls_group_handler.schedule_removal(
+                                node_ids.into_iter().map(Into::into).collect() // Convert NodeId to u32
+                            );
+                        }
                         }
                     }
                 }
@@ -259,9 +295,6 @@ impl Router {
                                 Err(e) => {
                                     log::error!("[ROUTER] Error processing AddPending command: {}", e);
                                 }
-
-                                Err(e) => {log::error!("Failed to add pending key packages")}, // Or handle other errors
-
                             }
                         }
                         Ok(Command::Remove { index }) => {
@@ -391,7 +424,24 @@ impl Router {
             }
 
                 _ = update_interval.tick() => {
-                    log::debug!("⏰ Automatic scheduled self-update...");
+                    log::debug!("⏰ Scheduled Update Cycle scheduled self-update...");
+                    // Check for pending Removals
+                    if self.mls_group_handler.have_pending_removals() {
+                        match self.mls_group_handler.remove_pending() {
+                            Ok((commit, welcome_option)) => {
+                                log::info!("✅ Automatic removal successful.");
+                                corosync::send_message(&self.corosync_handle, commit.as_slice())
+                                .expect("Failed to send message through Corosync");
+                                if let Some(welcome) = welcome_option {
+                                    corosync::send_message(&self.corosync_handle, welcome.as_slice())
+                                    .expect("Failed to send message through Corosync");
+                                }
+                            }
+                            Err(e) => log::error!("❌ Automatic removal failed: {:?}", e),
+                        }
+                    }
+                    // Check for pending Adds
+                    // Update self
                     match self.mls_group_handler.update_self() {
                         Ok((commit, welcome_option)) => {
                             log::info!("✅ Automatic self-update successful.");
