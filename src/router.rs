@@ -407,10 +407,13 @@ impl Router {
                 log::debug!("Application → MLS: {} bytes from {}", size, src);
                 match self.mls_group_handler.process_outgoing_application_message(&buf[..size]){
                     Ok(data) => {
-                        tx_network_socket
-                            .send_to(data.as_slice(), format!("{}:{}", self.config.multicast_ip, self.config.multicast_port))
-                            .await
-                            .context("Failed to forward packet to network")?;
+                        if let Err(e) = tx_network_socket
+                        .send_to(data.as_slice(), format!("{}:{}", self.config.multicast_ip, self.config.multicast_port))
+                        .await
+                        .context("Failed to forward packet to network")
+                        {
+                            log::error!("Failed to forward packet to network: {:?}", e);
+                        }
                     }
                     Err(e) => {
                         log::error!("Error processing appData coming from application: {}", e);
