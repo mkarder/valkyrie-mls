@@ -2,6 +2,7 @@ use crate::authentication::ed25519::Ed25519SignatureKeyPair;
 use crate::authentication::{self, Ed25519credential};
 use crate::config::MlsConfig;
 use anyhow::{Context, Error};
+use core::error;
 use openmls::group::MlsGroup;
 use openmls::prelude::{group_info::VerifiableGroupInfo, *};
 use openmls_basic_credential::SignatureKeyPair;
@@ -238,6 +239,7 @@ impl MlsSwarmLogic for MlsEngine {
                                         .epoch()
                                         .as_u64()
                                 {
+                                    log::error!("### Trailing error ### ");
                                     Err(MlsEngineError::TrailingEpoch)
                                 } else {
                                     Err(MlsEngineError::FutureEpoch)
