@@ -7,6 +7,7 @@ use openmls::prelude::{group_info::VerifiableGroupInfo, *};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::time::SystemTime;
 use tls_codec::{Deserialize, Serialize};
 
@@ -55,7 +56,10 @@ pub trait MlsSwarmLogic {
     #[allow(dead_code)]
     fn retrieve_ratchet_tree(&self) -> Vec<u8>;
 
-    fn process_incoming_network_message(&mut self, message: &[u8]) -> Result<Vec<u8>, Error>;
+    fn process_incoming_network_message(
+        &mut self,
+        message: &[u8],
+    ) -> Result<Vec<u8>, MlsEngineError>;
     fn process_incoming_delivery_service_message(
         &mut self,
         message: &[u8],
@@ -171,17 +175,24 @@ impl MlsEngine {
 }
 
 impl MlsSwarmLogic for MlsEngine {
-    fn process_incoming_network_message(&mut self, mut buf: &[u8]) -> Result<Vec<u8>, Error> {
+    fn process_incoming_network_message(
+        &mut self,
+        mut buf: &[u8],
+    ) -> Result<Vec<u8>, MlsEngineError> {
         /*
         let message_in =
             MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
         */
 
-        let message_in = MlsMessageIn::tls_deserialize(&mut buf).map_err(|e| {
-            log::error!("Error processing message: {:?}", e);
-            Error::msg("Error processing message.")
-        })?;
-
+        let message_in = MlsMessageIn::tls_deserialize(&mut buf);
+        match message_in {
+            Ok(_) => {}
+            Err(e) => {
+                log::error!("[Router] Error deserializing TLS message: {:?}", e);
+                return Err(MlsEngineError::TlsSerializationError);
+            }
+        }
+        let message_in = message_in.unwrap();
         match message_in.extract() {
             MlsMessageBodyIn::PublicMessage(msg) => {
                 let processed_message = self
@@ -199,19 +210,13 @@ impl MlsSwarmLogic for MlsEngine {
                     }
                     ProcessedMessageContent::ExternalJoinProposalMessage(_)
                     | ProcessedMessageContent::StagedCommitMessage(_)
-                    | ProcessedMessageContent::ProposalMessage(_) => Err(Error::msg(
-                        "[MlsEngine] Expected ApplicationMessage from Network. Received Proposal or Commit.",
-                    )),
+                    | ProcessedMessageContent::ProposalMessage(_) => {
+                        Err(MlsEngineError::ProposalOverApplicationChannel)
+                    }
                 }
             }
             MlsMessageBodyIn::PrivateMessage(msg) => {
-                let processed_message =
-                    self.group
-                        .process_message(&self.provider, msg)
-                        .map_err(|e| {
-                            log::error!("[MlsEngine] Error processing message: {:?}", e);
-                            Error::msg("[MlsEngine] Error processing message.")
-                        })?;
+                let processed_message = self.group.process_message(&self.provider, msg)?;
 
                 if let Sender::Member(leaf_index) = processed_message.sender() {
                     self.last_received.insert(*leaf_index, SystemTime::now());
@@ -228,20 +233,16 @@ impl MlsSwarmLogic for MlsEngine {
                     }
                     ProcessedMessageContent::ExternalJoinProposalMessage(_)
                     | ProcessedMessageContent::StagedCommitMessage(_)
-                    | ProcessedMessageContent::ProposalMessage(_) => Err(Error::msg(
-                        "[MlsEngine] Expected ApplicationMessage from Network. Received Proposal or Commit.",
-                    )),
+                    | ProcessedMessageContent::ProposalMessage(_) => {
+                        Err(MlsEngineError::ProposalOverApplicationChannel)
+                    }
                 }
             }
-            MlsMessageBodyIn::Welcome(_) => Err(Error::msg(
-                "[MlsEngine] Expected ApplicationMessage from Network. Received Welcome.",
-            )),
-            MlsMessageBodyIn::GroupInfo(_) => Err(Error::msg(
-                "[MlsEngine] Expected ApplicationMessage from Network. Received GroupInfo.",
-            )),
-            MlsMessageBodyIn::KeyPackage(_) => Err(Error::msg(
-                "[MlsEngine] Expected ApplicationMessage from Network. Received KeyPackage.",
-            )),
+            MlsMessageBodyIn::Welcome(_) => Err(MlsEngineError::WelcomeOverApplicationChannel),
+            MlsMessageBodyIn::GroupInfo(_) => Err(MlsEngineError::GroupInfoOverApplicationChannel),
+            MlsMessageBodyIn::KeyPackage(_) => {
+                Err(MlsEngineError::KeyPackageOverApplicationChannel)
+            }
         }
     }
 
@@ -1072,3 +1073,81 @@ fn capabilities(credential_type: &str) -> Capabilities {
         _ => panic!("Unsupported credential type: {}", credential_type),
     }
 }
+
+#[derive(Debug)]
+pub enum MlsEngineError {
+    TlsSerializationError,
+    ProposalOverApplicationChannel,
+    CommitOverApplicationChannel,
+    WelcomeOverApplicationChannel,
+    GroupInfoOverApplicationChannel,
+    KeyPackageOverApplicationChannel,
+    UnauthorizedExternalApplicationMessage,
+    ValidationError,
+    WrongGroupId,
+    WrongEpoch,
+    UnknownMember,
+    ProcessMessageError,
+}
+
+impl From<ProcessMessageError> for MlsEngineError {
+    fn from(error: ProcessMessageError) -> Self {
+        match error {
+            ProcessMessageError::UnauthorizedExternalApplicationMessage => {
+                Self::ProposalOverApplicationChannel
+            }
+            ProcessMessageError::UnsupportedProposalType => Self::ProposalOverApplicationChannel,
+            ProcessMessageError::ValidationError(e) => match e {
+                ValidationError::WrongGroupId => Self::WrongGroupId,
+                ValidationError::WrongEpoch => Self::WrongGroupId,
+                ValidationError::UnknownMember => Self::UnknownMember,
+                _ => Self::ValidationError,
+            },
+            _ => Self::ProcessMessageError,
+        }
+    }
+}
+
+impl fmt::Display for MlsEngineError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let description = match self {
+            MlsEngineError::TlsSerializationError => {
+                "Error serializing or deserializing using tls_codec."
+            }
+            MlsEngineError::ProposalOverApplicationChannel => {
+                "Proposals are not allowed to be sent over the application channel."
+            }
+            MlsEngineError::CommitOverApplicationChannel => {
+                "Commits are not allowed to be sent over the application channel."
+            }
+            MlsEngineError::WelcomeOverApplicationChannel => {
+                "Welcome messages are not allowed to be sent over the application channel."
+            }
+            MlsEngineError::GroupInfoOverApplicationChannel => {
+                "GroupInfo messages are not allowed to be sent over the application channel."
+            }
+            MlsEngineError::KeyPackageOverApplicationChannel => {
+                "KeyPackage messages are not allowed to be sent over the application channel."
+            }
+            MlsEngineError::UnauthorizedExternalApplicationMessage => {
+                "External application messages are not permitted without proper authorization."
+            }
+            MlsEngineError::ValidationError => {
+                "Validation of the incoming message or content failed."
+            }
+            MlsEngineError::WrongGroupId => "The message was intended for a different group ID.",
+            MlsEngineError::WrongEpoch => {
+                "The message was created for a different epoch than the current group epoch."
+            }
+            MlsEngineError::UnknownMember => {
+                "The message originated from an unknown member not recognized in the current group."
+            }
+            MlsEngineError::ProcessMessageError => {
+                "An unexpected error occurred while processing the MLS message."
+            }
+        };
+        write!(f, "{}", description)
+    }
+}
+
+impl std::error::Error for MlsEngineError {}

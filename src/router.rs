@@ -393,8 +393,7 @@ impl Router {
                             .context("Failed to forward packet to application")?;
                     }
                     Err(e) => {
-                        log::error!("Error processing incoming network message: {}", e);
-                        // Optionally: continue, return, or handle differently
+                        log::error!("[Router] Error processing incoming network message: {}", e);
                     }
                 }
             }
