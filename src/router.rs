@@ -424,19 +424,7 @@ impl Router {
                 _ = update_interval.tick() => {
                     log::debug!("⏰ Scheduled Update Cycle scheduled self-update...");
                     match self.mls_group_handler.get_mls_group_state() {
-                        MlsSwarmState::Alone => {
-                            match self.mls_group_handler.get_key_package() {
-                                Ok(key_package) => {
-                                    log::debug!("[ROUTER] Alone in MlsGroup. Broadcasting key package.");
-                                    corosync::send_message(&self.corosync_handle, key_package.as_slice())
-                                        .expect("Failed to send key package through Corosync");
-                                    log::debug!("[ROUTER] Key package sent to Corosync.");
-                                }
-                                Err(e) => {
-                                    log::error!("[ROUTER] Error Broadcasting KeyPackage: {}", e);
-                                }
-                            }
-                        },
+                        MlsSwarmState::Alone |
                         MlsSwarmState::SubGroup => {
                             // Check for pending Removals
                             if self.mls_group_handler.have_pending_removals() {
