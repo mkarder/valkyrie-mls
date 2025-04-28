@@ -765,14 +765,12 @@ impl MlsAutomaticRemoval for MlsEngine {
         }
     }
 
-
     fn get_leaf_index_from_id(
         &self,
         group: &MlsGroup,
         target_id: u32,
     ) -> Result<LeafNodeIndex, Error> {
         for member in group.members() {
-
             let id_match = match member.credential.credential_type() {
                 CredentialType::Basic => {
                     let cred = BasicCredential::try_from(member.credential.clone())
@@ -947,6 +945,32 @@ impl MlsGroupDiscovery for MlsEngine {
             }
             _ => None,
         }
+    }
+}
+
+pub trait MlsGroupReset {
+    fn reset_group(&mut self);
+}
+
+impl MlsGroupReset for MlsEngine {
+    fn reset_group(&mut self) {
+        let (_credential_type, capabilities) =
+            match self.config.credential_type.to_lowercase().as_str() {
+                "basic" => (CredentialType::Basic, capabilities("basic")),
+                "x509" => (CredentialType::X509, capabilities("x509")),
+                "ed25519" => (CredentialType::Other(0xF000), capabilities("ed25519")),
+                other => panic!(
+                    "Cannot initialize Mls Component. Unsupported credential type: {}",
+                    other
+                ),
+            };
+        self.group = MlsGroup::new(
+            &self.provider,
+            &self.signature_key,
+            &generate_group_create_config(capabilities.clone()),
+            self.credential_with_key.clone(),
+        )
+        .expect("Error creating group");
     }
 }
 

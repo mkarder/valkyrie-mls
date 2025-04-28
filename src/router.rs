@@ -1,5 +1,5 @@
 use crate::mls_group_handler::{
-    MlsAutomaticRemoval, MlsGroupDiscovery, MlsSwarmLogic, MlsSwarmState,
+    MlsAutomaticRemoval, MlsEngineError, MlsGroupDiscovery, MlsSwarmLogic, MlsSwarmState,
 };
 
 use crate::config::RouterConfig;
@@ -15,6 +15,7 @@ use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::result::Result::Ok;
 use std::thread;
+use std::time::Instant;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
@@ -125,6 +126,8 @@ pub struct Router {
     mls_group_handler: MlsEngine,
     corosync_handle: Handle,
     config: RouterConfig,
+    wrong_epoch_timer: Option<Instant>,
+    wrong_epoch_timeout: Duration,
 }
 
 impl Router {
@@ -134,6 +137,8 @@ impl Router {
             mls_group_handler,
             corosync_handle: handle,
             config,
+            wrong_epoch_timer: None,
+            wrong_epoch_timeout: Duration::from_secs(5),
         }
     }
 
@@ -387,10 +392,17 @@ impl Router {
                 log::debug!("Network → MLS: {} bytes from {}", size, src);
                 match self.mls_group_handler.process_incoming_network_message(&buf[..size]){
                     Ok(data) => {
+                        self.wrong_epoch_timer = None;
                         tx_app_socket
                             .send_to(data.as_slice(), self.config.tx_app_sock_addr.clone())
                             .await
                             .context("Failed to forward packet to application")?;
+                    }
+                    Err(MlsEngineError::WrongEpoch) => {
+                        if self.wrong_epoch_timer.is_none() {
+                            log::warn!("Detected WrongEpoch. Starting recovery timer.");
+                            self.wrong_epoch_timer = Some(Instant::now());
+                        }
                     }
                     Err(e) => {
                         log::error!("[Router] Error processing incoming network message: {}", e);
@@ -418,6 +430,7 @@ impl Router {
                 }
             }
 
+                // Event loop: check for removals, adds and conduct updates based on current status.
                 _ = update_interval.tick() => {
                     log::debug!("⏰ Scheduled Update Cycle scheduled self-update...");
                     match self.mls_group_handler.get_mls_group_state() {
