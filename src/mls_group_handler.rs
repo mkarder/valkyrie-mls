@@ -6,9 +6,15 @@ use openmls::group::MlsGroup;
 use openmls::prelude::{group_info::VerifiableGroupInfo, *};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 use tls_codec::{Deserialize, Serialize};
+
+pub enum MlsSwarmState {
+    Alone,
+    SubGroup,
+    MainGroup,
+}
 
 #[allow(dead_code)]
 pub struct MlsEngine {
@@ -24,12 +30,13 @@ pub struct MlsEngine {
     capabilities: Capabilities,
     last_received: HashMap<LeafNodeIndex, SystemTime>,
     pending_removals: Vec<LeafNodeIndex>,
+    totem_group: HashSet<u32>,
 }
 
 pub trait MlsSwarmLogic {
     fn add_new_member(&mut self, key_package: KeyPackage) -> (Vec<u8>, Vec<u8>);
     fn add_new_member_from_bytes(&mut self, key_package_bytes: &[u8]) -> (Vec<u8>, Vec<u8>);
-    fn add_pending_key_packages(&mut self) -> Result<(Vec<u8>, Vec<u8>), Error>;
+    fn add_pending_key_packages(&mut self) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error>;
 
     fn remove_member(&mut self, leaf_node: LeafNodeIndex) -> (Vec<u8>, Option<Vec<u8>>);
 
@@ -42,6 +49,8 @@ pub trait MlsSwarmLogic {
         unverified_credential: Credential,
         attached_key: Option<&SignaturePublicKey>,
     ) -> Result<(), Error>;
+
+    fn credential_present_in_group(&self, credential: Credential) -> bool;
 
     #[allow(dead_code)]
     fn retrieve_ratchet_tree(&self) -> Vec<u8>;
@@ -99,6 +108,10 @@ impl MlsEngine {
 
         let update_interval_secs = config.update_interval_secs;
 
+        // Initialize totem group
+        let mut totem_group = HashSet::new();
+        totem_group.insert(config.node_id);
+
         MlsEngine {
             config,
             group_join_config,
@@ -112,6 +125,7 @@ impl MlsEngine {
             capabilities,
             last_received: HashMap::new(),
             pending_removals: Vec::new(),
+            totem_group, // We always start with ourself in a group of 1
         }
     }
 
@@ -120,7 +134,8 @@ impl MlsEngine {
             .expect("Error loading group")
     }
 
-    pub fn get_key_package(&self) -> Result<Vec<u8>, Error> {
+    pub fn get_key_package(&mut self) -> Result<Vec<u8>, Error> {
+        self.refresh_key_package()?;
         let key_package = MlsMessageOut::from(self.key_package.key_package().clone());
         key_package
             .tls_serialize_detached()
@@ -149,13 +164,17 @@ impl MlsEngine {
     pub fn update_interval_secs(&self) -> u64 {
         self.update_interval_secs
     }
+
+    pub fn update_totem_group(&mut self, group: Vec<u32>) {
+        self.totem_group = group.into_iter().collect(); // Update group
+    }
 }
 
 impl MlsSwarmLogic for MlsEngine {
     fn process_incoming_network_message(&mut self, mut buf: &[u8]) -> Result<Vec<u8>, Error> {
         /*
-               let message_in =
-                   MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
+        let message_in =
+            MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
         */
 
         let message_in = MlsMessageIn::tls_deserialize(&mut buf).map_err(|e| {
@@ -300,13 +319,7 @@ impl MlsSwarmLogic for MlsEngine {
             }
 
             MlsMessageBodyIn::PrivateMessage(msg) => {
-                let processed_message =
-                    self.group
-                        .process_message(&self.provider, msg)
-                        .map_err(|e| {
-                            log::error!("Error processing message: {:?}", e);
-                            Error::msg("Error processing message.")
-                        })?;
+                let processed_message = self.group.process_message(&self.provider, msg)?;
                 // Validate sender's Credential
                 match self.verify_credential(processed_message.credential().clone(), None) {
                     Ok(_) => {}
@@ -375,9 +388,8 @@ impl MlsSwarmLogic for MlsEngine {
                 })?;
 
         let sender_index = staged_join.welcome_sender_index();
-        self.last_received.insert(sender_index, SystemTime::now());
 
-        let group = staged_join.into_group(&self.provider).map_err(|e| {
+        let future_group = staged_join.into_group(&self.provider).map_err(|e| {
             log::error!(
                 "[MlsEngine] Error joining group from StagedWelcome: {:?}",
                 e
@@ -389,12 +401,7 @@ impl MlsSwarmLogic for MlsEngine {
             Error::msg("Failed to convert staged join into group")
         })?;
 
-        log::info!(
-            "[MlsEngine] Joined group with ID: {:?}",
-            group.group_id().as_slice()
-        );
-
-        let sender = group.member(sender_index).ok_or_else(|| {
+        let sender = future_group.member(sender_index).ok_or_else(|| {
             log::error!("[MlsEngine] Sender not found in group.");
             Error::msg("Sender not found in group.")
         })?;
@@ -404,10 +411,20 @@ impl MlsSwarmLogic for MlsEngine {
             e
         })?;
 
-        self.group = group;
+        if self.should_join(&future_group) {
+            self.group = future_group;
+            log::info!(
+                "[MlsEngine] Joined group with ID: {:?}",
+                self.group.group_id().as_slice()
+            );
+            self.last_received.clear(); // Flush old, as we join a new roup.
+            self.last_received.insert(sender_index, SystemTime::now());
+            // self.refresh_key_package()?;
 
-        self.refresh_key_package()?;
+            return Ok(());
+        }
 
+        log::debug!("Received Welcome for a subgroup smaller than ours. Discarding.");
         Ok(())
     }
 
@@ -416,7 +433,16 @@ impl MlsSwarmLogic for MlsEngine {
     }
 
     fn handle_incoming_key_package(&mut self, key_package_in: KeyPackageIn) {
-        log::info!("Received KeyPackage message. Verifying and storing it.");
+        // Check if KeyPackage is from someone within the group
+        if self.credential_present_in_group(key_package_in.unverified_credential().credential) {
+            log::debug!(
+                "[MlsEngine] Received KeyPackage from someone in our group. Discarding it."
+            );
+            return;
+        }
+
+        // Verify credential and store key package
+        log::info!("Received KeyPackage message. Verifying and  storing it.");
         match self.verify_credential(
             key_package_in.unverified_credential().credential,
             Some(&key_package_in.unverified_credential().signature_key),
@@ -454,7 +480,7 @@ impl MlsSwarmLogic for MlsEngine {
         (group_commit_out, welcome_out)
     }
 
-    fn add_pending_key_packages(&mut self) -> Result<(Vec<u8>, Vec<u8>), Error> {
+    fn add_pending_key_packages(&mut self) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
         let mut key_packages = Vec::new();
         for (_key_ref, key_package) in self.pending_key_packages.iter() {
             key_packages.push(key_package.clone());
@@ -462,27 +488,34 @@ impl MlsSwarmLogic for MlsEngine {
 
         // Early return if there are no key packages to add
         if key_packages.is_empty() {
-            // You could also return Ok with empty data if that fits your use case better
-            log::warn!("No key packages to add");
-            return Err(Error::msg("No key packages to add"));
+            return Ok(None);
         }
 
-        let (group_commit, welcome, _group_info) =
-            self.group
-                .add_members(&self.provider, &self.signature_key, &key_packages)?;
+        match self.can_add(&key_packages) {
+            false => {
+                log::debug!("[MlsEngine] Should not add pending key packages. Clearing pending key package list.");
+                self.pending_key_packages.clear();
+                Ok(None)
+            }
+            true => {
+                let (group_commit, welcome, _group_info) =
+                    self.group
+                        .add_members(&self.provider, &self.signature_key, &key_packages)?;
 
-        let group_commit_out = group_commit
-            .tls_serialize_detached()
-            .expect("Error serializing group commit");
+                let group_commit_out = group_commit
+                    .tls_serialize_detached()
+                    .expect("Error serializing group commit");
 
-        let welcome_out = welcome
-            .tls_serialize_detached()
-            .expect("Error serializing welcome");
+                let welcome_out = welcome
+                    .tls_serialize_detached()
+                    .expect("Error serializing welcome");
 
-        let _ = self.group.merge_pending_commit(&self.provider);
-        self.pending_key_packages.clear();
+                let _ = self.group.merge_pending_commit(&self.provider);
+                self.pending_key_packages.clear();
 
-        Ok((group_commit_out, welcome_out))
+                Ok(Some((group_commit_out, welcome_out)))
+            }
+        }
     }
 
     fn handle_incoming_commit(&mut self, commit: StagedCommit) -> Result<(), Error> {
@@ -656,13 +689,17 @@ impl MlsSwarmLogic for MlsEngine {
             },
         }
     }
+
+    fn credential_present_in_group(&self, credential: Credential) -> bool {
+        self.group.members().any(|m| m.credential == credential)
+    }
 }
 
 pub trait MlsAutomaticRemoval {
     fn have_pending_removals(&self) -> bool;
     fn remove_pending(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error>;
     fn schedule_removal(&mut self, node_ids: Vec<u32>);
-    fn get_leaf_index_from_id(&mut self, id: u32) -> Result<LeafNodeIndex, Error>;
+    fn get_leaf_index_from_id(&self, group: &MlsGroup, id: u32) -> Result<LeafNodeIndex, Error>;
 }
 
 /// This trait ensures that we remove nodes when they disappear from our corosync group.
@@ -673,6 +710,8 @@ impl MlsAutomaticRemoval for MlsEngine {
 
     // Removes nodes scheduled for removal. Creates a commit over all removals.
     fn remove_pending(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
+        // See if we need to remove from anyone we haven't heard of
+
         let (group_commit, welcome_option, _group_info) = self
             .group
             .remove_members(&self.provider, &self.signature_key, &self.pending_removals)
@@ -710,7 +749,7 @@ impl MlsAutomaticRemoval for MlsEngine {
     // This list is translated into LeafNodeIndexes for us to remove.
     fn schedule_removal(&mut self, node_ids: Vec<u32>) {
         for target_id in node_ids {
-            match self.get_leaf_index_from_id(target_id) {
+            match self.get_leaf_index_from_id(self.group(), target_id) {
                 Ok(index) => {
                     self.pending_removals.push(index);
                 }
@@ -725,9 +764,14 @@ impl MlsAutomaticRemoval for MlsEngine {
         }
     }
 
-    // helper function in order to retrieve LeafNodeIndex from a u32 ID.
-    fn get_leaf_index_from_id(&mut self, target_id: u32) -> Result<LeafNodeIndex, Error> {
-        for member in self.group().members() {
+
+    fn get_leaf_index_from_id(
+        &self,
+        group: &MlsGroup,
+        target_id: u32,
+    ) -> Result<LeafNodeIndex, Error> {
+        for member in group.members() {
+
             let id_match = match member.credential.credential_type() {
                 CredentialType::Basic => {
                     let cred = BasicCredential::try_from(member.credential.clone())
@@ -762,6 +806,146 @@ impl MlsAutomaticRemoval for MlsEngine {
             "No group member matched node_id = {}",
             target_id
         ))
+    }
+}
+
+pub trait MlsGroupDiscovery {
+    fn get_mls_group_state(&self) -> MlsSwarmState;
+    fn mls_group_contains_gcs(&self, group: &MlsGroup) -> bool;
+    fn should_join(&self, group_to_join: &MlsGroup) -> bool;
+    fn min_node_id(group: &MlsGroup) -> Option<u32>;
+    fn can_add(&self, to_be_added: &Vec<KeyPackage>) -> bool;
+    fn id_from_key_package(&self, kp: KeyPackage) -> Option<u32>;
+}
+
+impl MlsGroupDiscovery for MlsEngine {
+    fn get_mls_group_state(&self) -> MlsSwarmState {
+        // Could possibly cache this state to avoid checking every time, and then just update state whenever we see group changes.
+        if self.mls_group_contains_gcs(self.group()) {
+            MlsSwarmState::MainGroup
+        } else if self.group.members().count() == 1 {
+            MlsSwarmState::Alone
+        } else {
+            MlsSwarmState::SubGroup
+        }
+    }
+
+    fn mls_group_contains_gcs(&self, group: &MlsGroup) -> bool {
+        self.config.node_id == self.config.gcs_id
+            || self
+                .get_leaf_index_from_id(group, self.config.gcs_id)
+                .is_ok()
+    }
+
+    fn should_join(&self, group_to_join: &MlsGroup) -> bool {
+        match self.get_mls_group_state() {
+            MlsSwarmState::MainGroup => {
+                log::debug!(
+                    "[MlsEngine] Received Welcome but current group contains GCS. Discarding Welcome."
+                );
+                return false;
+            }
+            MlsSwarmState::Alone | MlsSwarmState::SubGroup => {
+                // Check if incoming group contains GCS
+                if self.mls_group_contains_gcs(group_to_join) {
+                    log::debug!("[MlsEngine] Group from Welcome contained GCS ");
+                    return true;
+                }
+
+                // No GCS present. Check if we are a majority group
+                if self.group().members().count() > self.totem_group.len() / 2 {
+                    log::debug!("[MlsEngine] No GCS present. Current is a majority group. Discarding Welcome.");
+                    return false;
+                }
+
+                //
+                if group_to_join.members().count() > self.totem_group.len() / 2 {
+                    log::debug!("[MlsEngine] No GCS present. Group from Welcome were a majority group. Joining.");
+                    return true;
+                }
+
+                // Accept only if sender MIN NODE ID < your MIN NODE ID
+                return Self::min_node_id(group_to_join) < Self::min_node_id(self.group());
+            }
+        }
+    }
+
+    fn min_node_id(group: &MlsGroup) -> Option<u32> {
+        group
+            .members()
+            .filter_map(|member| match member.credential.credential_type() {
+                CredentialType::Basic => BasicCredential::try_from(member.credential.clone())
+                    .ok()
+                    .map(|cred| {
+                        u32::from_le_bytes(
+                            cred.identity()[..4]
+                                .try_into()
+                                .expect("Error converting Basic Identity to u32."),
+                        )
+                    }),
+                CredentialType::Other(_) => Ed25519credential::try_from(member.credential.clone())
+                    .ok()
+                    .map(|cred| cred.credential_data.identity),
+                _ => None,
+            })
+            .min()
+    }
+
+    fn can_add(&self, to_be_added: &Vec<KeyPackage>) -> bool {
+        match self.get_mls_group_state() {
+            MlsSwarmState::MainGroup => true,
+            MlsSwarmState::Alone | MlsSwarmState::SubGroup => {
+                // Check if a GCS is present in the Totem Group
+                if self.totem_group.contains(&self.config.gcs_id) {
+                    return false;
+                }
+
+                // Check if we are a majority group
+                if self.group().members().count() > self.totem_group.len() / 2 {
+                    return true;
+                }
+
+                match Self::min_node_id(self.group()) {
+                    Some(id) => {
+                        let lowest_id_in_mls_group = id;
+
+                        if to_be_added.into_iter().any(|kp| {
+                            self.id_from_key_package(kp.clone()) < Some(lowest_id_in_mls_group)
+                        }) {
+                            // If any of the pending key packages have a higher ID than the lowest in our group
+                            // that implies we should join that group.
+                            return false;
+                        }
+                        // ...else we should add the received key packages
+                        return true;
+                    }
+                    None => {
+                        log::error!("[MlsEngine] Could not resolve MINIMUM GROUP ID. Not allowing to add to thius group.");
+                        false
+                    }
+                }
+            }
+        }
+    }
+
+    fn id_from_key_package(&self, kp: KeyPackage) -> Option<u32> {
+        match kp.leaf_node().credential().credential_type() {
+            CredentialType::Basic => BasicCredential::try_from(kp.leaf_node().credential().clone())
+                .ok()
+                .map(|cred| {
+                    u32::from_le_bytes(
+                        cred.identity()[..4]
+                            .try_into()
+                            .expect("Error converting Basic Identity to u32."),
+                    )
+                }),
+            CredentialType::Other(_) => {
+                Ed25519credential::try_from(kp.leaf_node().credential().clone())
+                    .ok()
+                    .map(|cred| cred.credential_data.identity)
+            }
+            _ => None,
+        }
     }
 }
 

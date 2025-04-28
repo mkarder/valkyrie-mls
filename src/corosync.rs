@@ -52,7 +52,7 @@ pub fn deliver_callback(
 pub fn confchg_callback(
     _handle: &Handle,
     _group_name: &str,
-    _member_list: Vec<Address>,
+    members_list: Vec<Address>,
     left_list: Vec<Address>,
     joined_list: Vec<Address>,
 ) {
@@ -60,16 +60,23 @@ pub fn confchg_callback(
     log::info!("[Corosync] Nodes removed: {:?}", left_list);
 
     if let Some(sig_tx) = SIG_CHANNEL.get() {
+        // Who left
         if !joined_list.is_empty() {
             let _ = sig_tx.try_send(CorosyncSignal::NodeJoined(
                 joined_list.iter().map(|a| a.nodeid).collect(),
             ));
         }
+
+        // Who joined
         if !left_list.is_empty() {
             let _ = sig_tx.try_send(CorosyncSignal::NodeLeft(
                 left_list.iter().map(|a| a.nodeid).collect(),
             ));
         }
+
+        // Inform MLS of current CPG (Totem) Group composition
+        let group = members_list.iter().map(|a| a.nodeid).collect();
+        let _ = sig_tx.try_send(CorosyncSignal::GroupStatus(group));
     }
 }
 
@@ -86,6 +93,22 @@ pub fn initialize() -> cpg::Handle {
     let handle = cpg::initialize(&ModelData::ModelV1(model1), 0).expect("Failed to initialize CPG");
 
     join_group(&handle, "my_test_group").expect("[Corosync] Failed to join group");
+
+    if let Some(sig_tx) = SIG_CHANNEL.get() {
+        match cpg::membership_get(handle, "my_test_group") {
+            Ok(members) => {
+                // Inform MLS of current CPG (Totem) Group composition
+                let group = members.iter().map(|a| a.nodeid).collect();
+                let _ = sig_tx.try_send(CorosyncSignal::GroupStatus(group));
+            }
+            Err(e) => {
+                log::error!(
+                    "[Corosync] Could not obtain list of CPG (Totem) members because of {}",
+                    e
+                )
+            }
+        }
+    }
 
     log::debug!("[Corosync] initialized with group \"my_test_group\".");
     handle

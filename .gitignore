@@ -35,9 +35,9 @@ authentication/credentials/*
 
 
 # EXCEPT test keys and credentials for Alice and Bob
-!authentication/keys/9999*
+!authentication/keys/7777*
 !authentication/keys/8888*
-!authentication/credentials/9999*
+!authentication/credentials/7777*
 !authentication/credentials/8888*
 
 # Local IDE settings
