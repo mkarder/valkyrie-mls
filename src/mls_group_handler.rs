@@ -702,10 +702,13 @@ pub trait MlsAutomaticRemoval {
     fn get_leaf_index_from_id(&self, group: &MlsGroup, id: u32) -> Result<LeafNodeIndex, Error>;
 }
 
+/// This trait ensures that we remove nodes when they disappear from our corosync group.
 impl MlsAutomaticRemoval for MlsEngine {
     fn have_pending_removals(&self) -> bool {
         !self.pending_removals.is_empty()
     }
+
+    // Removes nodes scheduled for removal. Creates a commit over all removals.
     fn remove_pending(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
         // See if we need to remove from anyone we haven't heard of
 
@@ -742,6 +745,8 @@ impl MlsAutomaticRemoval for MlsEngine {
         Ok((commit_bytes, welcome_bytes))
     }
 
+    // Corosync provides us with a list of IDs (u32) that have left the corosync group.
+    // This list is translated into LeafNodeIndexes for us to remove.
     fn schedule_removal(&mut self, node_ids: Vec<u32>) {
         for target_id in node_ids {
             match self.get_leaf_index_from_id(self.group(), target_id) {
