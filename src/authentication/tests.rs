@@ -1,6 +1,6 @@
 /*
  For test identies, use idienties that begin with 'test', as we remove all these files after tests have concluded.
- If one need to obtain identies, we have saved credentials for Alice and Bob, for those to test with.
+ If one need to obtain identies, we have saved credentials for Alice (7777) and Bob (8888), for those to test with.
 */
 
 #[cfg(test)]
@@ -28,24 +28,23 @@ mod tests {
 
     #[allow(dead_code)]
     pub fn generate_signed_ed25519_credential(
-        identity: &str,
+        identity: u32,
         credential_key_bytes: Vec<u8>,
-        issuer: &str,
+        issuer: u32,
         not_after: u64,
         store: bool,
     ) -> Result<Ed25519credential, CredentialError> {
-        let message =
-            generate_signing_message(identity.as_bytes(), &credential_key_bytes, not_after);
+        let message = generate_signing_message(identity, &credential_key_bytes, not_after);
 
-        let signing_key = load_signing_key_from_file(issuer.as_bytes().to_vec())?;
+        let signing_key = load_signing_key_from_file(issuer)?;
         let signature = signing_key.sign(&message);
 
         let credential_data = Ed25519CredentialData {
-            identity: identity.as_bytes().to_vec(),
+            identity,
             credential_key_bytes,
             not_after,
             signature_bytes: signature.to_bytes().to_vec(),
-            issuer: issuer.as_bytes().to_vec(),
+            issuer,
         };
 
         let credential = Ed25519credential::new(credential_data.clone());
@@ -67,24 +66,19 @@ mod tests {
         let signature_algorithm =
             Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519.signature_algorithm();
 
-        let identity = "test-identity";
+        let identity = 1000;
         let credential_key = SignatureKeyPair::new(signature_algorithm)
             .expect("Error generating a signature key pair.");
 
         let credential_key_bytes = credential_key.public().to_vec(); // Should be 32 bytes
-        let issuer = b"Alice".to_vec();
+        let issuer = 7777;
         let not_after = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs()
             + 3600;
 
-        let message = [
-            &identity.as_bytes()[..],
-            &credential_key_bytes[..],
-            &not_after.to_le_bytes()[..],
-        ]
-        .concat();
+        let message = generate_signing_message(identity, &credential_key_bytes, not_after);
 
         let signature = load_signing_key_from_file(issuer.clone())
             .unwrap()
@@ -92,7 +86,7 @@ mod tests {
         let signature_bytes = signature.to_bytes().to_vec();
 
         Ed25519CredentialData {
-            identity: identity.as_bytes().to_vec(),
+            identity,
             credential_key_bytes,
             signature_bytes,
             issuer,
@@ -112,11 +106,9 @@ mod tests {
 
     #[test]
     fn load_ed25519_keys_from_file() {
-        let subject = "Alice";
-        load_verifying_key_from_file(subject.as_bytes().to_vec())
-            .expect("Error loading verifying key from Alice.");
-        load_signing_key_from_file(subject.as_bytes().to_vec())
-            .expect("Error loading signing key from Alice issuer.");
+        let subject = 7777; //Alice
+        load_verifying_key_from_file(subject).expect("Error loading verifying key from 7777.pub");
+        load_signing_key_from_file(subject).expect("Error loading signing key from 7777.priv");
     }
 
     #[test]
@@ -140,11 +132,11 @@ mod tests {
         let signature_algorithm =
             Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519.signature_algorithm();
 
-        let identity = "test-identity";
+        let identity = 1003;
         let credential_key = SignatureKeyPair::new(signature_algorithm)
             .expect("Error generating a signature key pair.");
 
-        let issuer = "Alice";
+        let issuer = 7777;
         let not_after = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -152,18 +144,17 @@ mod tests {
             + 3600; // 1 hour from now
 
         // Generate a valid, signed Ed25519 credential
-        let message =
-            generate_signing_message(identity.as_bytes(), &credential_key.public(), not_after);
+        let message = generate_signing_message(identity, &credential_key.public(), not_after);
 
-        let signing_key = load_signing_key_from_file(issuer.as_bytes().to_vec()).unwrap();
+        let signing_key = load_signing_key_from_file(issuer).unwrap();
         let signature = signing_key.sign(&message);
 
         let credential_data = Ed25519CredentialData {
-            identity: identity.as_bytes().to_vec(),
+            identity,
             credential_key_bytes: credential_key.public().to_vec(),
             not_after,
             signature_bytes: signature.to_bytes().to_vec(),
-            issuer: issuer.as_bytes().to_vec(),
+            issuer,
         };
 
         let credential = Ed25519credential::new(credential_data.clone());
@@ -176,7 +167,7 @@ mod tests {
         assert!(std::path::Path::new(&credential_path).exists());
 
         // Load the credential from the file
-        let loaded_credential = Ed25519credential::from_file(identity.as_bytes().to_vec()).unwrap();
+        let loaded_credential = Ed25519credential::from_file(identity).unwrap();
         assert_eq!(
             loaded_credential.serialized_contents(),
             credential.serialized_contents()
@@ -194,10 +185,10 @@ mod tests {
         let mut invalid_signature = signature.to_vec().clone();
         invalid_signature[0] ^= 0xFF; // Corrupt the signature
         let invalid_credential = Ed25519credential::new(Ed25519CredentialData {
-            identity: identity.as_bytes().to_vec(),
+            identity,
             credential_key_bytes: credential_key.public().to_vec(),
             signature_bytes: invalid_signature,
-            issuer: issuer.as_bytes().to_vec(),
+            issuer,
             not_after,
         });
         assert!(
@@ -215,10 +206,10 @@ mod tests {
             - 3600; // 1 hour in the past
 
         let expired_credential = Ed25519credential::new(Ed25519CredentialData {
-            identity: identity.as_bytes().to_vec(),
+            identity,
             credential_key_bytes: credential_key.public().to_vec(),
             signature_bytes: signature.to_bytes().to_vec(),
-            issuer: issuer.as_bytes().to_vec(),
+            issuer,
             not_after: expired_not_after,
         });
         assert!(
@@ -229,12 +220,12 @@ mod tests {
         );
 
         // Invalid Issuer
-        let invalid_issuer = "Bob";
+        let invalid_issuer = 8888;
         let invalid_credential = Ed25519credential::new(Ed25519CredentialData {
-            identity: identity.as_bytes().to_vec(),
+            identity,
             credential_key_bytes: credential_key.public().to_vec(),
             signature_bytes: signature.to_bytes().to_vec(),
-            issuer: invalid_issuer.as_bytes().to_vec(),
+            issuer: invalid_issuer,
             not_after,
         });
         assert!(
@@ -263,15 +254,16 @@ mod tests {
 
     #[test]
     fn ed25519_issuer_issues_valid_credential() {
-        let issuer_id = "test-issuer";
+        let issuer_id = 1004;
         let issuer = Ed25519Issuer::create_issuer(issuer_id);
+        assert!(issuer.store().is_ok());
 
         let signature_algorithm =
             Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519.signature_algorithm();
         let client_keypair = SignatureKeyPair::new(signature_algorithm).unwrap();
         let pub_key = client_keypair.public().to_vec();
 
-        let cred_with_key = issuer.issue("test-drone", &pub_key).unwrap();
+        let cred_with_key = issuer.issue(1005, &pub_key).unwrap();
 
         assert_eq!(cred_with_key.signature_key.as_slice(), pub_key.as_slice());
 
@@ -284,39 +276,34 @@ mod tests {
         // std::fs::remove_file(&credential_path).expect("Failed to delete test credential file");
 
         // Load issuer and key from file then issue credential
-        let ca = "Alice";
-        let subject = "Bob";
+        let ca = 7777;
+        let subject = 8888;
 
-        let issuer =
-            Ed25519Issuer::from_file(ca.as_bytes().to_vec()).expect("Failed to create issuer");
+        let issuer = Ed25519Issuer::from_file(ca).expect("Failed to create issuer");
 
-        let subject_key = Ed25519SignatureKeyPair::from_file(subject.as_bytes().to_vec())
-            .expect("Failed to create subject's (Bob's) key pair");
+        let subject_key = Ed25519SignatureKeyPair::from_file(subject)
+            .expect("Failed to create subject's (8888) key pair");
 
         let subject_credential = issuer
             .issue(subject, subject_key.public_key())
             .expect("Failed to issue key for subject");
 
-        assert_eq!(
-            subject_credential.credential,
-            Ed25519credential::from_file(subject.as_bytes().to_vec())
-                .unwrap()
-                .into()
-        );
+        let parsed_credential = Ed25519credential::from_file(subject).unwrap().into();
+        assert_eq!(subject_credential.credential, parsed_credential);
     }
 
     #[test]
     #[should_panic]
     fn ed25519_issuer_rejects_invalid_pubkey() {
-        let issuer = Ed25519Issuer::create_issuer("test");
+        let issuer = Ed25519Issuer::create_issuer(1006);
 
         let invalid_key = vec![0u8; 31]; // Invalid length (should be 32)
-        issuer.issue("test-invalid-drone", &invalid_key).unwrap();
+        issuer.issue(1007, &invalid_key).unwrap();
     }
 
     #[test]
     fn ed25519_issuer_sign_and_verify() {
-        let issuer = Ed25519Issuer::create_issuer("test-self-signed");
+        let issuer = Ed25519Issuer::create_issuer(1008);
 
         let message = b"important auth message";
         let signature = issuer.sign(message);
@@ -325,9 +312,9 @@ mod tests {
 
     fn cleanup_test_files() {
         let patterns = [
-            format!("{}/credentials/test*.cred", AUTHENTICATION_DIR),
-            format!("{}/keys/test*.pub", AUTHENTICATION_DIR),
-            format!("{}/keys/test*.priv", AUTHENTICATION_DIR),
+            format!("{}/credentials/100*.cred", AUTHENTICATION_DIR),
+            format!("{}/keys/100*.pub", AUTHENTICATION_DIR),
+            format!("{}/keys/100*.priv", AUTHENTICATION_DIR),
         ];
 
         for pattern in &patterns {

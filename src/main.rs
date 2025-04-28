@@ -20,10 +20,9 @@ async fn main() -> Result<()> {
 
     #[cfg(target_os = "linux")]
     {
-
         log::info!("[MAIN] Starting MLS Valkyrie...");
-        let config_path = format!("{}/valkyrie-mls/config.toml", env::var("HOME").unwrap());
-        let config = Config::from_file(config_path.as_str()).unwrap();
+        let _config_path = format!("{}/valkyrie-mls/config.toml", env::var("HOME").unwrap());
+        let _config = Config::from_file(_config_path.as_str()).unwrap();
 
         // Determine correct home directory
         let user_home = match env::var("SUDO_USER") {
