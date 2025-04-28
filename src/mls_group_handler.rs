@@ -185,7 +185,7 @@ impl MlsSwarmLogic for MlsEngine {
             MlsEngineError::TlsSerializationError
         })?;
 
-        match message_in.extract() {
+        match message_in.clone().extract() {
             MlsMessageBodyIn::PublicMessage(msg) => {
                 let processed = self
                     .group
@@ -231,17 +231,19 @@ impl MlsSwarmLogic for MlsEngine {
                     Err(e) => match e {
                         ProcessMessageError::ValidationError(val_error) => match val_error {
                             ValidationError::WrongEpoch => {
-                                match Self::extract_epoch_from_private_message(&msg) {
-                                    Some(epoch) if self.group.epoch().as_u64() < epoch => {
-                                        Err(MlsEngineError::TrailingEpoch)
-                                    }
-                                    Some(_) => Err(MlsEngineError::FutureEpoch),
-                                    None => {
-                                        log::warn!("Could not extract epoch from PrivateMessage.");
-                                        Err(MlsEngineError::ValidationError)
-                                    }
+                                if self.group.epoch().as_u64()
+                                    < message_in
+                                        .try_into_protocol_message()
+                                        .unwrap()
+                                        .epoch()
+                                        .as_u64()
+                                {
+                                    Err(MlsEngineError::TrailingEpoch)
+                                } else {
+                                    Err(MlsEngineError::FutureEpoch)
                                 }
                             }
+
                             _ => Err(MlsEngineError::ValidationError),
                         },
                         _ => Err(MlsEngineError::from(e)),
