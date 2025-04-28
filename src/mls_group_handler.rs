@@ -717,7 +717,7 @@ fn generate_group_config() -> MlsGroupJoinConfig {
         .padding_size(0)
         .sender_ratchet_configuration(SenderRatchetConfiguration::new(
             5,   // out_of_order_tolerance
-            1000, // maximum_forward_distance
+            0, // maximum_forward_distance
         ))
         .use_ratchet_tree_extension(true)
         .build()
@@ -725,10 +725,11 @@ fn generate_group_config() -> MlsGroupJoinConfig {
 
 fn generate_group_create_config(capabilities: Capabilities) -> MlsGroupCreateConfig {
     MlsGroupCreateConfig::builder()
+        .max_past_epochs(1)  //Increase max past epochs stored 
         .padding_size(0)
         .sender_ratchet_configuration(SenderRatchetConfiguration::new(
             5,   // out_of_order_tolerance
-            1000, // maximum_forward_distance
+            0, // maximum_forward_distance
         ))
         .capabilities(capabilities)
         .use_ratchet_tree_extension(true)
