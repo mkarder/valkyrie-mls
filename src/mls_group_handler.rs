@@ -764,12 +764,14 @@ impl MlsAutomaticRemoval for MlsEngine {
         }
     }
 
+
     fn get_leaf_index_from_id(
         &self,
         group: &MlsGroup,
         target_id: u32,
     ) -> Result<LeafNodeIndex, Error> {
         for member in group.members() {
+
             let id_match = match member.credential.credential_type() {
                 CredentialType::Basic => {
                     let cred = BasicCredential::try_from(member.credential.clone())
