@@ -462,27 +462,26 @@ impl Router {
                             // Check for pending Adds
                             match self.mls_group_handler.add_pending_key_packages() {
                                 Ok(Some((group_commit, welcome))) => {
-                                    log::info!("[ROUTER] Added pending key packages, sending commit and welcome.");
+                                    log::info!("[Router] Added pending key packages, sending commit and welcome.");
                                     corosync::send_message(&self.corosync_handle, group_commit.as_slice())
                                         .expect("Failed to send Commit message through Corosync");
-                                    log::debug!("[ROUTER] Commit message sent to Corosync.");
+                                    log::debug!("[Router] Commit message sent to Corosync.");
                                     corosync::send_message(&self.corosync_handle, welcome.as_slice())
                                         .expect("Failed to send Welcome message through Corosync");
-                                    log::debug!("[ROUTER] Welcome message sent to Corosync.");
+                                    log::debug!("[Router] Welcome message sent to Corosync.");
                                 }
-                                Ok(None) => {log::debug!("[ROUTER] No key packages to add");}
+                                Ok(None) => {log::debug!("[Router] No key packages to add");}
                                 Err(e) => {
-                                    log::error!("[ROUTER] Error processing AddPending command: {}", e);
+                                    log::error!("[Router] Error processing AddPending command: {}", e);
                                 }
                             }
 
                             // Broadcast KeyPackage
                             match self.mls_group_handler.get_key_package() {
                                 Ok(key_package) => {
-                                    log::debug!("[ROUTER] GCS not in MlsGroup. Broadcasting key package.");
+                                    log::debug!("[Router] GCS not in MlsGroup. Broadcasting key package via Corosync.");
                                     corosync::send_message(&self.corosync_handle, key_package.as_slice())
                                         .expect("Failed to send key package through Corosync");
-                                    log::debug!("[ROUTER] Key package sent to Corosync.");
                                 }
                                 Err(e) => {
                                     log::error!("[ROUTER] Error Broadcasting KeyPackage: {}", e);
