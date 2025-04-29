@@ -226,7 +226,8 @@ impl Router {
                 Some(data) = rx_corosync_channel.recv() => {
                     log::debug!("[ROUTER] Corosync → MLS: Received {} bytes from Corosync", data.len());
                     match self.mls_group_handler.process_incoming_delivery_service_message(&data) {
-                        Ok(Some((commit, welcome))) => { //Incoming KeyPackage 
+                        Ok(Some((commit, welcome))) => {
+
                             log::info!("[ROUTER] Processing incoming delivery service message: Commit and Welcome generated.");
                             corosync::send_message(&self.corosync_handle, commit.as_slice())
                                 .expect("[ROUTER] Failed to send Commit message through Corosync");
@@ -235,8 +236,7 @@ impl Router {
                                 .expect("[ROUTER] Failed to send Welcome message through Corosync");
                             log::debug!("[ROUTER] Welcome message sent to Corosync.");
                         }
-                        Ok(None) => { // Incoming Commit
-                            self.wrong_epoch_timer = None;
+                        Ok(None) => {
                             log::debug!("[ROUTER] No Commit or Welcome generated from incoming delivery service message.");
                         }
                         Err(MlsEngineError::TrailingEpoch) => {
@@ -245,7 +245,7 @@ impl Router {
                                 self.wrong_epoch_timer = Some(Instant::now());
                             }
                         }
-                        Err(_e) => {  
+                        Err(_e) => {
                         }
                     }
                 }
