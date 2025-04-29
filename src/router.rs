@@ -247,14 +247,13 @@ impl Router {
                 // (Totem) Corosync Membership changes
                 Some(signal) = rx_corosync_signal.recv() => {
                     match signal {
-                        CorosyncSignal::NodeJoined(node_ids)=>{log::debug!("[ROUTER] Notified: Nodes joined: {:?}",node_ids);}
-                        CorosyncSignal::NodeLeft(node_ids)=>{
-                            log::info!("[ROUTER] Notified: Nodes left: {:?}",node_ids);
-                            if!node_ids.is_empty(){self.mls_group_handler.schedule_removal(node_ids.into_iter().map(Into::into).collect());}}
-                        CorosyncSignal::GroupStatus(group) => self.mls_group_handler.update_totem_group(group.into_iter().map(Into::into).collect()),
+                        CorosyncSignal::NodeJoined(_node_ids)=>{}
+                        CorosyncSignal::NodeLeft(node_ids)=>{log::info!("[ROUTER] Notified: Nodes left: {:?}",node_ids);if!node_ids.is_empty(){self.mls_group_handler.schedule_removal(node_ids.into_iter().map(Into::into).collect());}}
+                        CorosyncSignal::GroupStatus(group)=>self.mls_group_handler.update_totem_group(group.into_iter().map(Into::into).collect()),
                                             }
                 }
 
+                // Used for testing
                 // Commands coming from CMD-socket.
                 Ok((size, src, buf)) = async {
                     let mut buf = [0u8; MLS_MSG_BUFFER_SIZE];
@@ -383,6 +382,7 @@ impl Router {
                         }
                     }
                 }
+
               // Encrypted AppData coming in from radio network, being sent to MLS_group_handler for decryption,
               //then forwarded to Application
               Ok((size, src, buf)) = async {
@@ -440,7 +440,10 @@ impl Router {
                     if let Some(started_at) = self.wrong_epoch_timer {
                         if started_at.elapsed() >= self.wrong_epoch_timeout {
                             log::error!("WrongEpoch timer expired! Resetting MLS group.");
+                            // Reset MLS and Corosync group.
                             self.mls_group_handler.reset_group();
+                            let _ = corosync::reset_group(&self.corosync_handle, 5);
+
                             self.wrong_epoch_timer = None; // Reset the timer after recovering
                         }
                     }
