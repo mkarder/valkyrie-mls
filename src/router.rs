@@ -226,7 +226,8 @@ impl Router {
                 Some(data) = rx_corosync_channel.recv() => {
                     log::debug!("[ROUTER] Corosync → MLS: Received {} bytes from Corosync", data.len());
                     match self.mls_group_handler.process_incoming_delivery_service_message(&data) {
-                        Ok(Some((commit, welcome))) => { //Incoming KeyPackage 
+                        Ok(Some((commit, welcome))) => {
+
                             log::info!("[ROUTER] Processing incoming delivery service message: Commit and Welcome generated.");
                             corosync::send_message(&self.corosync_handle, commit.as_slice())
                                 .expect("[ROUTER] Failed to send Commit message through Corosync");
@@ -235,8 +236,7 @@ impl Router {
                                 .expect("[ROUTER] Failed to send Welcome message through Corosync");
                             log::debug!("[ROUTER] Welcome message sent to Corosync.");
                         }
-                        Ok(None) => { // Incoming Commit
-                            self.wrong_epoch_timer = None;
+                        Ok(None) => {
                             log::debug!("[ROUTER] No Commit or Welcome generated from incoming delivery service message.");
                         }
                         Err(MlsEngineError::TrailingEpoch) => {
@@ -245,7 +245,7 @@ impl Router {
                                 self.wrong_epoch_timer = Some(Instant::now());
                             }
                         }
-                        Err(_e) => {  
+                        Err(_e) => {
                         }
                     }
                 }
@@ -448,14 +448,47 @@ impl Router {
                             log::error!("WrongEpoch timer expired! Resetting MLS group.");
                             // Reset MLS and Corosync group.
                             self.mls_group_handler.reset_group();
-                            let _ = corosync::reset_group(&self.corosync_handle, 1);
+                            match corosync::reset_group(&self.corosync_handle, 1) {
+                                Ok(_) => {},
+                                Err(e) => {log::error!("{}", e)},
+                            }
 
                             self.wrong_epoch_timer = None; // Reset the timer after recovering
                         }
 
-                    }
+                    } else {
                     match self.mls_group_handler.get_mls_group_state() {
-                        MlsSwarmState::Alone |
+                        MlsSwarmState::Alone => {
+                            // Check for pending Adds
+                            match self.mls_group_handler.add_pending_key_packages() {
+                                Ok(Some((group_commit, welcome))) => {
+                                    log::info!("[ROUTER] Added pending key packages, sending commit and welcome.");
+                                    corosync::send_message(&self.corosync_handle, group_commit.as_slice())
+                                        .expect("Failed to send Commit message through Corosync");
+                                    log::debug!("[ROUTER] Commit message sent to Corosync.");
+                                    corosync::send_message(&self.corosync_handle, welcome.as_slice())
+                                        .expect("Failed to send Welcome message through Corosync");
+                                    log::debug!("[ROUTER] Welcome message sent to Corosync.");
+                                }
+                                Ok(None) => {log::debug!("[ROUTER] No key packages to add");}
+                                Err(e) => {
+                                    log::error!("[ROUTER] Error processing AddPending command: {}", e);
+                                }
+                            }
+
+                            // Broadcast KeyPackage
+                            match self.mls_group_handler.get_key_package() {
+                                Ok(key_package) => {
+                                    log::debug!("[ROUTER] GCS not in MlsGroup. Broadcasting key package.");
+                                    corosync::send_message(&self.corosync_handle, key_package.as_slice())
+                                        .expect("Failed to send key package through Corosync");
+                                    log::debug!("[ROUTER] Key package sent to Corosync.");
+                                }
+                                Err(e) => {
+                                    log::error!("[ROUTER] Error Broadcasting KeyPackage: {}", e);
+                                }
+                            }
+                        }
                         MlsSwarmState::SubGroup => {
                             // Check for pending Removals
                             if self.mls_group_handler.have_pending_removals() {
@@ -562,6 +595,7 @@ impl Router {
                                     }
                                 }
                                 Err(e) => log::error!("❌ Self-update failed: {:?}", e),
+                            }
                             }
                         }
                     }
