@@ -154,7 +154,7 @@ pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::
                     CsError::CsErrTryAgain => {
                         if attempt == MAX_RETRIES {
                             eprintln!("Failed to send message after {} retries: Buffer still full", MAX_RETRIES);
-                            return Err(Box::new(e));
+                            return Ok(());
                         } else {
                             log::warn!(
                                 "[Corosync] Send buffer full (CsErrTryAgain), retrying... (attempt {}/{})",
@@ -166,7 +166,7 @@ pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::
                     }
                     _ => {
                         eprintln!("Failed to send message: {}", e);
-                        return Err(Box::new(e));
+                        return Ok(());
                     }
                 }
             }
