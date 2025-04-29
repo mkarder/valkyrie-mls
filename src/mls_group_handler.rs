@@ -245,7 +245,7 @@ impl MlsSwarmLogic for MlsEngine {
                                 }
                             }
 
-                            _ => Err(MlsEngineError::ValidationError),
+                            _ => Err(MlsEngineError::ValidationError(val_error)),
                         },
                         _ => Err(MlsEngineError::from(e)),
                     },
@@ -325,55 +325,55 @@ impl MlsSwarmLogic for MlsEngine {
                         return Err(MlsEngineError::NotSupported)
                     }
                     ProcessedMessageContent::ApplicationMessage(_) => {
-                        return Err(MlsEngineError::ApplicationMessageOverPublicChannel
-                        )
+                        return Err(MlsEngineError::ApplicationMessageOverPublicChannel)
                     }
                 }
                 Ok(None)
             }
 
             MlsMessageBodyIn::PrivateMessage(msg) => {
-                
-                
                 match self.group.process_message(&self.provider, msg) {
                     Ok(processed_message) => {
                         // Validate sender's Credential
-                match self.verify_credential(processed_message.credential().clone(), None) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        log::error!("Error verifying sender's credential: {:?}", e);
-                        return Err(MlsEngineError::CredentialVerificationError);
-                    }
-                }
-
-                if let Sender::Member(leaf_index) = processed_message.sender() {
-                    self.last_received.insert(*leaf_index, SystemTime::now());
-                }
-
-                match processed_message.into_content() {
-                    ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
-                        match self.handle_incoming_commit(*staged_commit) {
+                        match self.verify_credential(processed_message.credential().clone(), None) {
                             Ok(_) => {}
                             Err(e) => {
-                                log::error!("Error handling incoming commit: {:?}", e);
+                                log::error!("Error verifying sender's credential: {:?}", e);
+                                return Err(MlsEngineError::CredentialVerificationError);
                             }
                         }
+
+                        if let Sender::Member(leaf_index) = processed_message.sender() {
+                            self.last_received.insert(*leaf_index, SystemTime::now());
+                        }
+
+                        match processed_message.into_content() {
+                            ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
+                                match self.handle_incoming_commit(*staged_commit) {
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        log::error!("Error handling incoming commit: {:?}", e);
+                                    }
+                                }
+                            }
+                            ProcessedMessageContent::ProposalMessage(proposal) => {
+                                let _ = self
+                                    .group
+                                    .store_pending_proposal(
+                                        self.provider.storage(),
+                                        *proposal.clone(),
+                                    )
+                                    .context("Error storing proposal.");
+                            }
+                            ProcessedMessageContent::ExternalJoinProposalMessage(_) => {
+                                return Err(MlsEngineError::NotSupported);
+                            }
+                            ProcessedMessageContent::ApplicationMessage(_) => {
+                                return Err(MlsEngineError::NotSupported);
+                            }
+                        }
+                        Ok(None)
                     }
-                    ProcessedMessageContent::ProposalMessage(proposal) => {
-                        let _ = self
-                            .group
-                            .store_pending_proposal(self.provider.storage(), *proposal.clone())
-                            .context("Error storing proposal.");
-                    }
-                    ProcessedMessageContent::ExternalJoinProposalMessage(_) => {
-                        return Err(MlsEngineError::NotSupported);
-                    }
-                    ProcessedMessageContent::ApplicationMessage(_) => {
-                        return Err(MlsEngineError::NotSupported);
-                    }
-                }
-                Ok(None)
-                    },
                     Err(e) => match e {
                         ProcessMessageError::ValidationError(val_error) => match val_error {
                             ValidationError::WrongEpoch => {
@@ -391,12 +391,13 @@ impl MlsSwarmLogic for MlsEngine {
                                 }
                             }
 
-                            _ => {return Err(MlsEngineError::ValidationError);},
+                            _ => {
+                                return Err(MlsEngineError::ValidationError(val_error));
+                            }
                         },
-                        _ => {Err(MlsEngineError::from(e))},
+                        _ => Err(MlsEngineError::from(e)),
                     },
                 }
-            
             }
             MlsMessageBodyIn::Welcome(welcome) => match self.handle_incoming_welcome(welcome) {
                 Ok(_) => Ok(None),
@@ -1176,7 +1177,7 @@ pub enum MlsEngineError {
     GroupInfoOverApplicationChannel,
     KeyPackageOverApplicationChannel,
     UnauthorizedExternalApplicationMessage,
-    ValidationError,
+    ValidationError(ValidationError),
     WrongGroupId,
     FutureEpoch,
     UnknownMember,
@@ -1199,7 +1200,8 @@ impl From<ProcessMessageError> for MlsEngineError {
                 ValidationError::WrongGroupId => Self::WrongGroupId,
                 ValidationError::WrongEpoch => Self::FutureEpoch,
                 ValidationError::UnknownMember => Self::UnknownMember,
-                _ => Self::ValidationError,
+                ValidationError::UnableToDecrypt(_) => Self::TrailingEpoch,
+                _ => Self::ValidationError(e),
             },
             _ => Self::ProcessMessageError,
         }
@@ -1230,8 +1232,8 @@ impl fmt::Display for MlsEngineError {
             MlsEngineError::UnauthorizedExternalApplicationMessage => {
                                         "External application messages are not permitted without proper authorization."
                                     }
-            MlsEngineError::ValidationError => {
-                                        "Validation of the incoming message or content failed."
+            MlsEngineError::ValidationError(e) => {
+                                        &e.to_string()
                                     }
             MlsEngineError::WrongGroupId => "The message was intended for a different group ID.",
             MlsEngineError::FutureEpoch => {
