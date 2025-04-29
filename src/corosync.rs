@@ -1,6 +1,7 @@
 use crate::router::{CorosyncSignal, MLS_HANDSHAKE_CHANNEL, SIG_CHANNEL};
 use rust_corosync::cpg;
 use rust_corosync::cpg::{Address, Guarantee, Handle, Model1Data, Model1Flags, ModelData};
+use rust_corosync::CsError;
 use rust_corosync::NodeId;
 
 /// Callback function for received multicast messages from Corosync
@@ -121,6 +122,7 @@ pub fn join_group(handle: &Handle, group_name: &str) -> Result<(), Box<dyn std::
     Ok(())
 }
 
+/*
 /// Sends a multicast message to the currently joined group
 pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = cpg::mcast_joined(*handle, Guarantee::TypeAgreed, message) {
@@ -133,6 +135,51 @@ pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::
     );
     Ok(())
 }
+
+ */
+
+
+ pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    const MAX_RETRIES: usize = 5;
+    const RETRY_DELAY_MS: u64 = 10;
+
+    for attempt in 0..=MAX_RETRIES {
+        match cpg::mcast_joined(*handle, Guarantee::TypeAgreed, message) {
+            Ok(_) => {
+                log::debug!("[Corosync] Sent message to group; msg_len={}", message.len());
+                return Ok(());
+            }
+            Err(e) => {
+                match e { 
+                    CsError::CsErrTryAgain => {
+                        if attempt == MAX_RETRIES {
+                            eprintln!("Failed to send message after {} retries: Buffer still full", MAX_RETRIES);
+                            return Err(Box::new(e));
+                        } else {
+                            log::warn!(
+                                "[Corosync] Send buffer full (CsErrTryAgain), retrying... (attempt {}/{})",
+                                attempt + 1,
+                                MAX_RETRIES
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
+                        }
+                    }
+                    _ => {
+                        eprintln!("Failed to send message: {}", e);
+                        return Err(Box::new(e));
+                    }
+                }
+            }
+        }
+    }
+
+    // This ensures that the function always returns a Result even if loop ends (very unlikely)
+    Ok(())
+}
+
+
+
+ 
 
 /// Blocking receive loop for Corosync messages (runs in a separate thread)
 pub fn receive_message(handle: &Handle) -> Result<(), Box<dyn std::error::Error>> {

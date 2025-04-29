@@ -482,9 +482,9 @@ impl Router {
                             // Update self
                             match self.mls_group_handler.update_self() {
                                 Ok((commit, welcome_option)) => {
-                                    log::info!("✅ Automatic self-update successful.");
                                     corosync::send_message(&self.corosync_handle, commit.as_slice())
                                     .expect("Failed to send message through Corosync");
+                                    log::info!("✅ Automatic self-update successful.");
                                     if let Some(welcome) = welcome_option {
                                         corosync::send_message(&self.corosync_handle, welcome.as_slice())
                                         .expect("Failed to send message through Corosync");
@@ -492,6 +492,7 @@ impl Router {
                                 }
                                 Err(e) => log::error!("❌ Self-update failed: {:?}", e),
                             }
+
 
                             // Broadcast KeyPackage
                             match self.mls_group_handler.get_key_package() {
