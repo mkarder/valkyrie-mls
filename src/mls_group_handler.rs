@@ -993,6 +993,7 @@ pub trait MlsGroupReset {
 
 impl MlsGroupReset for MlsEngine {
     fn reset_group(&mut self) {
+        log::debug!("[MlsEngine] Reseting MLS group.");
         let (_credential_type, capabilities) =
             match self.config.credential_type.to_lowercase().as_str() {
                 "basic" => (CredentialType::Basic, capabilities("basic")),
@@ -1116,10 +1117,9 @@ fn generate_key_package(
 
 fn generate_group_config() -> MlsGroupJoinConfig {
     MlsGroupJoinConfig::builder()
-        .max_past_epochs(1)  //Increase max past epochs stored 
+        .max_past_epochs(1) //Increase max past epochs stored
         .padding_size(0)
         .sender_ratchet_configuration(SenderRatchetConfiguration::new(
-
             5,    // out_of_order_tolerance
             1000, // maximum_forward_distance
         ))
@@ -1129,10 +1129,9 @@ fn generate_group_config() -> MlsGroupJoinConfig {
 
 fn generate_group_create_config(capabilities: Capabilities) -> MlsGroupCreateConfig {
     MlsGroupCreateConfig::builder()
-        .max_past_epochs(1)  //Increase max past epochs stored 
+        .max_past_epochs(1) //Increase max past epochs stored
         .padding_size(0)
         .sender_ratchet_configuration(SenderRatchetConfiguration::new(
-
             5,    // out_of_order_tolerance
             1000, // maximum_forward_distance
         ))

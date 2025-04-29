@@ -1,8 +1,13 @@
+use std::thread;
+use std::time::Duration;
+
 use crate::router::{CorosyncSignal, MLS_HANDSHAKE_CHANNEL, SIG_CHANNEL};
 use rust_corosync::cpg;
 use rust_corosync::cpg::{Address, Guarantee, Handle, Model1Data, Model1Flags, ModelData};
 use rust_corosync::CsError;
 use rust_corosync::NodeId;
+
+const GROUP: &str = "my_test_group";
 
 /// Callback function for received multicast messages from Corosync
 pub fn deliver_callback(
@@ -93,7 +98,7 @@ pub fn initialize() -> cpg::Handle {
     // Initialize CPG
     let handle = cpg::initialize(&ModelData::ModelV1(model1), 0).expect("Failed to initialize CPG");
 
-    join_group(&handle, "my_test_group").expect("[Corosync] Failed to join group");
+    join_group(&handle, GROUP).expect("[Corosync] Failed to join group");
 
     if let Some(sig_tx) = SIG_CHANNEL.get() {
         match cpg::membership_get(handle, "my_test_group") {
@@ -188,5 +193,16 @@ pub fn receive_message(handle: &Handle) -> Result<(), Box<dyn std::error::Error>
         return Err(Box::new(e));
     }
 
+    Ok(())
+}
+
+pub fn reset_group(handle: &Handle, delay_seconds: u32) -> Result<(), Box<dyn std::error::Error>> {
+    cpg::leave(*handle, GROUP)?;
+
+    // Wait for a delay
+    thread::sleep(Duration::from_secs(delay_seconds as u64));
+
+    cpg::join(*handle, GROUP)?;
+    log::info!("[Corosync] Re-joined group \"{}\".", GROUP);
     Ok(())
 }
