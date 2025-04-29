@@ -462,7 +462,7 @@ impl Router {
                             self.wrong_epoch_timer = None; // Reset the timer after recovering
                         }
 
-                    } else {
+                    }
                     match self.mls_group_handler.get_mls_group_state() {
                         MlsSwarmState::Alone => {
                             // Check for pending Adds
@@ -603,7 +603,6 @@ impl Router {
                             }
                             }
                         }
-                    }
                 }
 
                 // Handle Ctrl+C (Shutdown)

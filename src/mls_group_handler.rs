@@ -623,7 +623,7 @@ impl MlsSwarmLogic for MlsEngine {
     fn update_self(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
         log::info!("[MlsEngine] UPDATING SELF: current group members present: \n");
         for mem in self.group().members() {
-            log::info!("{:?}", mem);
+            log::info!("{:?}", mem.credential);
         }
 
         let pending = self.group.pending_commit();
