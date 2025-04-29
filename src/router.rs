@@ -239,7 +239,13 @@ impl Router {
                             self.wrong_epoch_timer = None;
                             log::debug!("[ROUTER] No Commit or Welcome generated from incoming delivery service message.");
                         }
-                        Err(e) => {  
+                        Err(MlsEngineError::TrailingEpoch) => {
+                            if self.wrong_epoch_timer.is_none() {
+                                log::warn!("Detected WrongEpoch. Starting recovery timer.");
+                                self.wrong_epoch_timer = Some(Instant::now());
+                            }
+                        }
+                        Err(_e) => {  
                         }
                     }
                 }
