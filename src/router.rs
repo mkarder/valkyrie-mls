@@ -411,7 +411,7 @@ impl Router {
                             .await
                             .context("Failed to forward packet to application")?;
                     }
-                    Err(MlsEngineError::TrailingEpoch) => {
+                    Err(MlsEngineError::TrailingEpoch) | Err(MlsEngineError::ValidationError(_) )=> {
                         if self.wrong_epoch_timer.is_none() {
                             log::warn!("[Router] Detected WrongEpoch. Starting recovery timer.");
                             self.wrong_epoch_timer = Some(Instant::now());
