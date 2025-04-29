@@ -2,7 +2,6 @@ use crate::authentication::ed25519::Ed25519SignatureKeyPair;
 use crate::authentication::{self, Ed25519credential};
 use crate::config::MlsConfig;
 use anyhow::{Context, Error};
-use core::error;
 use openmls::group::MlsGroup;
 use openmls::prelude::{group_info::VerifiableGroupInfo, *};
 use openmls_basic_credential::SignatureKeyPair;
@@ -547,7 +546,7 @@ impl MlsSwarmLogic for MlsEngine {
                 log::info!("Removed pending KeyPackage: {:?}", removed);
             }
         }
-
+        /*
         for unverified_credential in commit.credentials_to_verify() {
             match self.verify_credential(unverified_credential.clone(), None) {
                 Ok(_) => {}
@@ -557,6 +556,7 @@ impl MlsSwarmLogic for MlsEngine {
                 }
             }
         }
+         */
 
         // Handle REMOVE operations: remove LeafNodeIndex in pending_removals list (array)
         for remove in commit.remove_proposals() {
@@ -666,7 +666,6 @@ impl MlsSwarmLogic for MlsEngine {
         unverified_credential: Credential,
         attached_key: Option<&SignaturePublicKey>,
     ) -> Result<(), Error> {
-        log::info!("[MlsEngine] Verifying incoming Credential!");
         match unverified_credential.credential_type() {
             CredentialType::Basic => {
                 log::debug!("[MlsEngine] Received Basic credential. Continuing...");
