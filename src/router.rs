@@ -384,7 +384,7 @@ impl Router {
                             }
                         }
                         Err(e) => {
-                            log::error!("Error parsing command: {}", e);
+                            log::error!("[Router] Error parsing command: {}", e);
                         }
                     }
                 }
@@ -407,7 +407,7 @@ impl Router {
                     }
                     Err(MlsEngineError::TrailingEpoch) => {
                         if self.wrong_epoch_timer.is_none() {
-                            log::warn!("Detected WrongEpoch. Starting recovery timer.");
+                            log::warn!("[Router] Detected WrongEpoch. Starting recovery timer.");
                             self.wrong_epoch_timer = Some(Instant::now());
                         }
                     }
@@ -431,11 +431,11 @@ impl Router {
                         .await
                         .context("Failed to forward packet to network")
                         {
-                            log::error!("Failed to forward packet to network: {:?}", e);
+                            log::error!("[Router] Failed to forward packet to network: {:?}", e);
                         }
                     }
                     Err(e) => {
-                        log::error!("Error processing appData coming from application: {}", e);
+                        log::error!("[Router] Error processing appData coming from application: {}", e);
                     }
                 }
             }
