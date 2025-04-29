@@ -228,7 +228,6 @@ impl Router {
                     match self.mls_group_handler.process_incoming_delivery_service_message(&data) {
                         Ok(Some((commit, welcome))) => {
 
-                            log::info!("[ROUTER] Processing incoming delivery service message: Commit and Welcome generated.");
                             corosync::send_message(&self.corosync_handle, commit.as_slice())
                                 .expect("[ROUTER] Failed to send Commit message through Corosync");
                             log::debug!("[ROUTER] Commit message sent to Corosync.");
@@ -254,9 +253,16 @@ impl Router {
                 Some(signal) = rx_corosync_signal.recv() => {
                     match signal {
                         CorosyncSignal::NodeJoined(_node_ids)=>{}
-                        CorosyncSignal::NodeLeft(node_ids)=>{if!node_ids.is_empty(){self.mls_group_handler.schedule_removal(node_ids.into_iter().map(Into::into).collect());}}
-                        CorosyncSignal::GroupStatus(group)=>{log::info!("[Router] Current corosync group: {:?}",group);self.mls_group_handler.update_totem_group(group.into_iter().map(Into::into).collect())}
-                                            }
+                        CorosyncSignal::NodeLeft(node_ids)=>{
+                            log::debug!("[ROUTER] Notified: Nodes left: {:?}",node_ids);
+                            if !node_ids.is_empty(){
+                                self.mls_group_handler.schedule_removal(node_ids.into_iter().map(Into::into).collect());
+                            }
+                        }
+                        CorosyncSignal::GroupStatus(group)=> {
+                            self.mls_group_handler.update_totem_group(group.into_iter().map(Into::into).collect())
+                        },
+                    }
                 }
 
                 // Used for testing
@@ -271,7 +277,7 @@ impl Router {
                     let command = parse_command(&buf[..size]);
                     match command {
                         Ok(Command::Add { key_package_bytes }) => {
-                            log::info!(
+                            log::debug!(
                                 "[ROUTER] Received Add command for key_package ({} bytes).",
                                 key_package_bytes.len()
                             );
@@ -286,7 +292,7 @@ impl Router {
                             log::debug!("[ROUTER] Welcome message sent to Corosync.");
                         }
                         Ok(Command::AddPending) => {
-                            log::info!("[ROUTER] Received AddPending command.");
+                            log::debug!("[ROUTER] Received AddPending command.");
                             match self.mls_group_handler.add_pending_key_packages() {
                                 Ok(Some((group_commit, welcome))) => {
                                     log::info!("[ROUTER] AddPending command processed: Commit and Welcome generated.");
@@ -304,7 +310,7 @@ impl Router {
                             }
                         }
                         Ok(Command::Remove { index }) => {
-                            log::info!("[ROUTER] Received Remove command for LeafNode at index {}.", index);
+                            log::debug!("[ROUTER] Received Remove command for LeafNode at index {}.", index);
                             let (commit, _welcome_option) =
                                 self.mls_group_handler.remove_member(LeafNodeIndex::new(index));
                             log::debug!("Remove command processed: Commit generated.");
@@ -313,7 +319,7 @@ impl Router {
                             log::debug!("Commit message sent to Corosync.");
                         }
                         Ok(Command::Update) => {
-                            log::info!("[ROUTER] Received Update command.");
+                            log::debug!("[ROUTER] Received Update command.");
                             match self.mls_group_handler.update_self() {
                                 Ok((commit, welcome_option)) => {
                                     log::debug!("[ROUTER] Update command processed: Commit generated.");
@@ -334,10 +340,10 @@ impl Router {
 
                         }
                         Ok(Command::RetrieveRatchetTree) => {
-                            log::info!("[ROUTER] Received RetrieveRatchetTree command. \n Not implemented yet. Skipping operation...");
+                            log::debug!("[ROUTER] Received RetrieveRatchetTree command. \n Not implemented yet. Skipping operation...");
                         }
                         Ok(Command::ApplicationMsg { data }) => {
-                            log::info!(
+                            log::debug!(
                                 "[ROUTER] Received ApplicationMsg command for {} bytes.",
                                 data.len()
                             );
@@ -371,7 +377,7 @@ impl Router {
                             match self.mls_group_handler.get_key_package() {
                                 Ok(key_package) => {
 
-                                    log::info!("[ROUTER] BroadcastKeyPackage command processed: Sending key package.");
+                                    log::debug!("[ROUTER] BroadcastKeyPackage command processed: Sending key package.");
 
                                     corosync::send_message(&self.corosync_handle, key_package.as_slice())
                                         .expect("Failed to send key package through Corosync");
@@ -448,8 +454,8 @@ impl Router {
                             log::error!("WrongEpoch timer expired! Resetting MLS group.");
                             // Reset MLS and Corosync group.
                             self.mls_group_handler.reset_group();
-                            match corosync::reset_group(&self.corosync_handle, 1) {
-                                Ok(_) => {},
+                            match corosync::hard_reset_group(&self.corosync_handle, 3) {
+                                Ok(handle) => {self.corosync_handle = handle},
                                 Err(e) => {log::error!("{}", e)},
                             }
 
@@ -462,7 +468,7 @@ impl Router {
                             // Check for pending Adds
                             match self.mls_group_handler.add_pending_key_packages() {
                                 Ok(Some((group_commit, welcome))) => {
-                                    log::info!("[Router] Added pending key packages, sending commit and welcome.");
+                                    log::debug!("[ROUTER] Added pending key packages, sending commit and welcome.");
                                     corosync::send_message(&self.corosync_handle, group_commit.as_slice())
                                         .expect("Failed to send Commit message through Corosync");
                                     log::debug!("[Router] Commit message sent to Corosync.");
@@ -507,7 +513,7 @@ impl Router {
                             // Check for pending Adds
                             match self.mls_group_handler.add_pending_key_packages() {
                                 Ok(Some((group_commit, welcome))) => {
-                                    log::info!("[ROUTER] Added pending key packages, sending commit and welcome.");
+                                    log::info!("[ROUTER] ✅ Added pending key packages, sending commit and welcome.");
                                     corosync::send_message(&self.corosync_handle, group_commit.as_slice())
                                         .expect("Failed to send Commit message through Corosync");
                                     log::debug!("[ROUTER] Commit message sent to Corosync.");
@@ -568,7 +574,7 @@ impl Router {
                             // Check for pending Adds
                             match self.mls_group_handler.add_pending_key_packages() {
                                 Ok(Some((group_commit, welcome))) => {
-                                    log::info!("[ROUTER] Added pending key packages, sending commit and welcome.");
+                                    log::info!("[ROUTER] ✅ Added pending key packages, sending commit and welcome.");
                                     corosync::send_message(&self.corosync_handle, group_commit.as_slice())
                                         .expect("Failed to send Commit message through Corosync");
                                     log::debug!("[ROUTER] Commit message sent to Corosync.");

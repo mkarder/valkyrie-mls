@@ -62,9 +62,12 @@ pub fn confchg_callback(
     left_list: Vec<Address>,
     joined_list: Vec<Address>,
 ) {
-    if !joined_list.is_empty() {log::info!("[Corosync] Nodes joined: {:?}", joined_list);}
-    if !left_list.is_empty() {log::info!("[Corosync] Nodes removed: {:?}", left_list);}
-    
+    if !joined_list.is_empty() {
+        log::debug!("[Corosync] Nodes joined: {:?}", joined_list);
+    }
+    if !left_list.is_empty() {
+        log::debug!("[Corosync] Nodes removed: {:?}", left_list);
+    }
 
     if let Some(sig_tx) = SIG_CHANNEL.get() {
         // Who left
@@ -124,7 +127,7 @@ pub fn initialize() -> cpg::Handle {
 /// Joins a Corosync CPG group
 pub fn join_group(handle: &Handle, group_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     cpg::join(*handle, group_name)?;
-    log::info!("[Corosync] Joined group \"{}\".", group_name);
+    log::debug!("[Corosync] Joined group \"{}\".", group_name);
     Ok(())
 }
 
@@ -144,48 +147,47 @@ pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::
 
  */
 
-
- pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     const MAX_RETRIES: usize = 5;
     const RETRY_DELAY_MS: u64 = 10;
 
     for attempt in 0..=MAX_RETRIES {
         match cpg::mcast_joined(*handle, Guarantee::TypeAgreed, message) {
             Ok(_) => {
-                log::debug!("[Corosync] Sent message to group; msg_len={}", message.len());
+                log::debug!(
+                    "[Corosync] Sent message to group; msg_len={}",
+                    message.len()
+                );
                 return Ok(());
             }
-            Err(e) => {
-                match e { 
-                    CsError::CsErrTryAgain => {
-                        if attempt == MAX_RETRIES {
-                            eprintln!("Failed to send message after {} retries: Buffer still full", MAX_RETRIES);
-                            return Ok(());
-                        } else {
-                            log::warn!(
+            Err(e) => match e {
+                CsError::CsErrTryAgain => {
+                    if attempt == MAX_RETRIES {
+                        eprintln!(
+                            "Failed to send message after {} retries: Buffer still full",
+                            MAX_RETRIES
+                        );
+                        return Ok(());
+                    } else {
+                        log::warn!(
                                 "[Corosync] Send buffer full (CsErrTryAgain), retrying... (attempt {}/{})",
                                 attempt + 1,
                                 MAX_RETRIES
                             );
-                            std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
-                        }
-                    }
-                    _ => {
-                        eprintln!("Failed to send message: {}", e);
-                        return Ok(());
+                        std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
                     }
                 }
-            }
+                _ => {
+                    eprintln!("Failed to send message: {}", e);
+                    return Ok(());
+                }
+            },
         }
     }
 
     // This ensures that the function always returns a Result even if loop ends (very unlikely)
     Ok(())
 }
-
-
-
- 
 
 /// Blocking receive loop for Corosync messages (runs in a separate thread)
 pub fn receive_message(handle: &Handle) -> Result<(), Box<dyn std::error::Error>> {
@@ -197,13 +199,17 @@ pub fn receive_message(handle: &Handle) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-pub fn reset_group(handle: &Handle, delay_seconds: u32) -> Result<(), Box<dyn std::error::Error>> {
+pub fn hard_reset_group(
+    handle: &Handle,
+    delay_seconds: u32,
+) -> Result<Handle, Box<dyn std::error::Error>> {
     cpg::leave(*handle, GROUP)?;
+    cpg::finalize(*handle)?;
 
     // Wait for a delay
     thread::sleep(Duration::from_secs(delay_seconds as u64));
 
-    cpg::join(*handle, GROUP)?;
-    log::info!("[Corosync] Re-joined group \"{}\".", GROUP);
-    Ok(())
+    let handle = initialize();
+    log::info!("[Corosync] Re-joined group \"{}\" after reset.", GROUP);
+    Ok(handle)
 }

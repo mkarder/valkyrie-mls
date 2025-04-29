@@ -139,7 +139,7 @@ impl MlsEngine {
     }
 
     pub fn get_key_package(&mut self) -> Result<Vec<u8>, Error> {
-        self.refresh_key_package()?;
+        // self.refresh_key_package()?;
         let key_package = MlsMessageOut::from(self.key_package.key_package().clone());
         key_package
             .tls_serialize_detached()
@@ -198,7 +198,7 @@ impl MlsSwarmLogic for MlsEngine {
                         let preview = std::str::from_utf8(&content_bytes)
                             .map(|text| &text[..text.len().min(50)])
                             .unwrap_or("<non-UTF8 data>");
-                        log::info!("[MlsEngine] Decrypted application message: {}", preview);
+                        log::debug!("[MlsEngine] Decrypted application message: {}", preview);
                         Ok(content_bytes)
                     }
                     _ => Err(MlsEngineError::ProposalOverApplicationChannel),
@@ -459,7 +459,7 @@ impl MlsSwarmLogic for MlsEngine {
             );
             self.last_received.clear(); // Flush old, as we join a new roup.
             self.last_received.insert(sender_index, SystemTime::now());
-            // self.refresh_key_package()?;
+            self.refresh_key_package()?;
 
             return Ok(());
         }
@@ -482,17 +482,17 @@ impl MlsSwarmLogic for MlsEngine {
         }
 
         // Verify credential and store key package
-        log::info!("Received KeyPackage message. Verifying and  storing it.");
+        log::info!("KEYPACKAGE Received KeyPackage message. Verifying and  storing it.");
         match self.verify_credential(
             key_package_in.unverified_credential().credential,
             Some(&key_package_in.unverified_credential().signature_key),
         ) {
             Ok(_) => {
-                log::info!("Credential verified successfully.");
                 let key_package = key_package_in
                     .validate(self.provider.crypto(), ProtocolVersion::Mls10)
                     .expect("Error validating KeyPackage");
                 self.store_key_package(key_package.clone());
+                log::debug!("Credential verified and validated successfully.");
             }
             Err(e) => log::error!("Error verifying credential: {:?}", e),
         }
@@ -621,6 +621,11 @@ impl MlsSwarmLogic for MlsEngine {
     }
 
     fn update_self(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
+        log::info!("[MlsEngine] UPDATING SELF: current group members present: \n");
+        for mem in self.group().members() {
+            log::info!("{:?}", mem);
+        }
+
         let pending = self.group.pending_commit();
         if pending.is_some() {
             log::error!(
