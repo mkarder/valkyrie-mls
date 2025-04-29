@@ -461,9 +461,9 @@ impl Router {
                             if self.mls_group_handler.have_pending_removals() {
                                 match self.mls_group_handler.remove_pending() {
                                     Ok((commit, welcome_option)) => {
-                                        log::info!("✅ Automatic removal successful.");
                                         corosync::send_message(&self.corosync_handle, commit.as_slice())
                                         .expect("Failed to send message through Corosync");
+                                        log::info!("✅ Automatic removal successful.");
                                         if let Some(welcome) = welcome_option {
                                             corosync::send_message(&self.corosync_handle, welcome.as_slice())
                                             .expect("Failed to send message through Corosync");

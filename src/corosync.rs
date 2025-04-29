@@ -62,8 +62,9 @@ pub fn confchg_callback(
     left_list: Vec<Address>,
     joined_list: Vec<Address>,
 ) {
-    log::info!("[Corosync] Nodes joined: {:?}", joined_list);
-    log::info!("[Corosync] Nodes removed: {:?}", left_list);
+    if !joined_list.is_empty() {log::info!("[Corosync] Nodes joined: {:?}", joined_list);}
+    if !left_list.is_empty() {log::info!("[Corosync] Nodes removed: {:?}", left_list);}
+    
 
     if let Some(sig_tx) = SIG_CHANNEL.get() {
         // Who left
