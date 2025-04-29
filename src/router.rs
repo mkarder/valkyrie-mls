@@ -454,10 +454,10 @@ impl Router {
                             log::error!("WrongEpoch timer expired! Resetting MLS group.");
                             // Reset MLS and Corosync group.
                             self.mls_group_handler.reset_group();
-                            match corosync::hard_reset_group(&self.corosync_handle, 3) {
+                            /*match corosync::hard_reset_group(&self.corosync_handle, 3) {
                                 Ok(()) => {log::info!("Corosync group reset successfully.");},
                                 Err(e) => {log::error!("{}", e)},
-                            }
+                            }*/
 
                             self.wrong_epoch_timer = None; // Reset the timer after recovering
                         }
