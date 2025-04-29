@@ -254,8 +254,8 @@ impl Router {
                 Some(signal) = rx_corosync_signal.recv() => {
                     match signal {
                         CorosyncSignal::NodeJoined(_node_ids)=>{}
-                        CorosyncSignal::NodeLeft(node_ids)=>{if!node_ids.is_empty(){log::info!("[ROUTER] Notified: Nodes left: {:?}",node_ids);self.mls_group_handler.schedule_removal(node_ids.into_iter().map(Into::into).collect());}}
-                        CorosyncSignal::GroupStatus(group)=>self.mls_group_handler.update_totem_group(group.into_iter().map(Into::into).collect()),
+                        CorosyncSignal::NodeLeft(node_ids)=>{if!node_ids.is_empty(){self.mls_group_handler.schedule_removal(node_ids.into_iter().map(Into::into).collect());}}
+                        CorosyncSignal::GroupStatus(group)=>{log::info!("[Router] Current corosync group: {:?}",group);self.mls_group_handler.update_totem_group(group.into_iter().map(Into::into).collect())}
                                             }
                 }
 
