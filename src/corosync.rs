@@ -202,14 +202,15 @@ pub fn receive_message(handle: &Handle) -> Result<(), Box<dyn std::error::Error>
 pub fn hard_reset_group(
     handle: &Handle,
     delay_seconds: u32,
-) -> Result<Handle, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     cpg::leave(*handle, GROUP)?;
-    cpg::finalize(*handle)?;
+    //cpg::finalize(*handle)?;
 
     // Wait for a delay
     thread::sleep(Duration::from_secs(delay_seconds as u64));
 
-    let handle = initialize();
+    //let handle = initialize();
+    cpg::join(*handle, GROUP)?;
     log::info!("[Corosync] Re-joined group \"{}\" after reset.", GROUP);
-    Ok(handle)
+    Ok(())
 }

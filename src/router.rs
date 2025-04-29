@@ -455,7 +455,7 @@ impl Router {
                             // Reset MLS and Corosync group.
                             self.mls_group_handler.reset_group();
                             match corosync::hard_reset_group(&self.corosync_handle, 3) {
-                                Ok(handle) => {self.corosync_handle = handle},
+                                Ok(()) => {log::info!("Corosync group reset successfully.");},
                                 Err(e) => {log::error!("{}", e)},
                             }
 
