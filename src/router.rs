@@ -448,12 +448,15 @@ impl Router {
                             log::error!("WrongEpoch timer expired! Resetting MLS group.");
                             // Reset MLS and Corosync group.
                             self.mls_group_handler.reset_group();
-                            let _ = corosync::reset_group(&self.corosync_handle, 1);
+                            match corosync::reset_group(&self.corosync_handle, 1) {
+                                Ok(_) => {},
+                                Err(e) => {log::error!("{}", e)},
+                            }
 
                             self.wrong_epoch_timer = None; // Reset the timer after recovering
                         }
 
-                    }
+                    } else {
                     match self.mls_group_handler.get_mls_group_state() {
                         MlsSwarmState::Alone |
                         MlsSwarmState::SubGroup => {
@@ -562,6 +565,7 @@ impl Router {
                                     }
                                 }
                                 Err(e) => log::error!("❌ Self-update failed: {:?}", e),
+                            }
                             }
                         }
                     }
