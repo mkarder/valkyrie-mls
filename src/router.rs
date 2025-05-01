@@ -101,26 +101,24 @@ pub fn parse_command(buffer: &[u8]) -> Result<Command, Error> {
 
 //Global transmission channel for Corosync
 pub static MLS_HANDSHAKE_CHANNEL: OnceCell<mpsc::Sender<Vec<u8>>> = OnceCell::new();
-
-pub fn init_global_channel(tx: mpsc::Sender<Vec<u8>>) {
-    MLS_HANDSHAKE_CHANNEL
-        .set(tx)
-        .expect("Global MLS_HANDSHAKE_CHANNEL already initialized");
-}
-
 pub static SIG_CHANNEL: OnceCell<mpsc::Sender<CorosyncSignal>> = OnceCell::new();
-
-pub fn init_signal_channel(tx: mpsc::Sender<CorosyncSignal>) {
-    SIG_CHANNEL
-        .set(tx)
-        .expect("Global SIG_CHANNEL already initialized");
-}
 
 #[derive(Debug, Clone)]
 pub enum CorosyncSignal {
     NodeJoined(Vec<NodeId>),
     NodeLeft(Vec<NodeId>),
     GroupStatus(Vec<NodeId>),
+}
+
+// Wrapper for sending messages to Corosync. Function will only log errors, not panic to avoid crashing.
+macro_rules! try_send {
+    ($handle:expr, $label:expr, $msg:expr) => {
+        if let Err(e) = corosync::send_message($handle, $msg) {
+            log::error!("[ROUTER] Failed to send {}: {}", $label, e);
+        } else {
+            log::debug!("[ROUTER] {} sent.", $label);
+        }
+    };
 }
 
 pub struct Router {
@@ -144,19 +142,29 @@ impl Router {
     }
 
     pub async fn run_main_loop(&mut self) -> Result<()> {
-        // Bind UDP sockets
-        let rx_cmd_socket = UdpSocket::bind(self.config.rx_cmd_sock_addr.clone())
+        // Bind UDP sockets — fail early if these don't work
+        let rx_cmd_socket = UdpSocket::bind(&self.config.rx_cmd_sock_addr)
             .await
-            .context("Failed to bind Command RX socket")?;
+            .with_context(|| {
+                format!(
+                    "Failed to bind Command RX socket at {}",
+                    self.config.rx_cmd_sock_addr
+                )
+            })?;
+
         log::debug!(
             "[ROUTER] Listening for Command messages on {}",
             self.config.rx_cmd_sock_addr
         );
 
-        //Application UDP Sockets (Send and receive from application)
-        let rx_app_socket = UdpSocket::bind(self.config.rx_app_sock_addr.clone())
+        let rx_app_socket = UdpSocket::bind(&self.config.rx_app_sock_addr)
             .await
-            .context("Failed to bind Application RX socket")?;
+            .with_context(|| {
+                format!(
+                    "Failed to bind Application RX socket at {}",
+                    self.config.rx_app_sock_addr
+                )
+            })?;
 
         log::debug!(
             "[ROUTER] Listening for AppData coming from Application on {}",
@@ -167,19 +175,32 @@ impl Router {
             .await
             .context("Failed to bind Application TX socket")?;
 
-        //Radio Network Multicast Sockets (Send and receive from radio network)
-        // Get interface IP from env
+        // Set up multicast sockets
         let node_ip_str = env::var("NODE_IP").context("NODE_IP not set")?;
-        let node_ip: Ipv4Addr = node_ip_str.parse().context("Invalid NODE_IP format")?;
+        let node_ip: Ipv4Addr = node_ip_str
+            .parse()
+            .context("Failed to parse NODE_IP as IPv4 address")?;
 
         let rx_network_socket = UdpSocket::bind(format!(
             "{}:{}",
             self.config.multicast_ip, self.config.multicast_port
         ))
         .await
-        .context("Failed to bind Multicast RX socket")?;
+        .with_context(|| {
+            format!(
+                "Failed to bind Multicast RX socket on {}:{}",
+                self.config.multicast_ip, self.config.multicast_port
+            )
+        })?;
+
         rx_network_socket
-            .join_multicast_v4(self.config.multicast_ip.parse()?, node_ip) //Try with your own ip address as interface, 10.10.0.x
+            .join_multicast_v4(
+                self.config
+                    .multicast_ip
+                    .parse()
+                    .context("Failed to parse multicast IP")?,
+                node_ip,
+            )
             .context("Failed to join multicast group")?;
 
         log::debug!(
@@ -190,31 +211,50 @@ impl Router {
         );
 
         let tx_network_socket =
-            UdpSocket::bind(format!("{}:{}", node_ip, self.config.multicast_port)) //Try with own ip address
+            UdpSocket::bind(format!("{}:{}", node_ip, self.config.multicast_port))
                 .await
-                .context("Failed to bind Multicast TX socket")?;
-        tx_network_socket.set_multicast_loop_v4(false)?;
+                .with_context(|| {
+                    format!(
+                        "Failed to bind Multicast TX socket on {}:{}",
+                        node_ip, self.config.multicast_port
+                    )
+                })?;
+
+        tx_network_socket
+            .set_multicast_loop_v4(false)
+            .context("Failed to disable multicast loopback")?;
+
         log::debug!(
             "[ROUTER] Bound multicast TX socket to {}:{}. Multicast loopback is disabled.",
             node_ip,
             self.config.multicast_port
         );
-        log::info!("[ROUTER] Socket Creation Completed.");
 
+        log::info!("[ROUTER] Socket creation completed.");
+
+        // Init channels — panic if they're already set
         let (tx_corosync_channel, mut rx_corosync_channel) = mpsc::channel::<Vec<u8>>(32);
-        init_global_channel(tx_corosync_channel);
+        MLS_HANDSHAKE_CHANNEL
+            .set(tx_corosync_channel)
+            .expect("MLS_HANDSHAKE_CHANNEL already initialized");
 
         let (tx_corosync_signal, mut rx_corosync_signal) = mpsc::channel::<CorosyncSignal>(16);
-        init_signal_channel(tx_corosync_signal);
+        SIG_CHANNEL
+            .set(tx_corosync_signal)
+            .expect("SIG_CHANNEL already initialized");
 
+        // Start Corosync thread — panic if it fails
         let handle_clone = self.corosync_handle.clone();
         thread::spawn(move || {
             if let Err(e) = receive_message(&handle_clone) {
-                log::error!("Error receiving message from Corosync: {:?}", e);
+                panic!(
+                    "[ROUTER] Fatal: Error in Corosync message thread (receive_message): {:?}",
+                    e
+                );
             }
         });
 
-        // Thread for generating regular update messages
+        // Start update cycle ticker
         let mut update_interval = tokio::time::interval(Duration::from_secs(
             self.mls_group_handler.update_interval_secs(),
         ));
@@ -224,27 +264,27 @@ impl Router {
                 biased;
                 //  MLS commit messages coming from Corosync being sent to MLS_group_handler for processing
                 Some(data) = rx_corosync_channel.recv() => {
-                    log::debug!("[ROUTER] Corosync → MLS: Received {} bytes from Corosync", data.len());
-                    match self.mls_group_handler.process_incoming_delivery_service_message(&data) {
-                        Ok(Some((commit, welcome))) => {
+                    log::debug!("[ROUTER] Corosync → MLS: Received {} bytes", data.len());
 
-                            corosync::send_message(&self.corosync_handle, commit.as_slice())
-                                .expect("[ROUTER] Failed to send Commit message through Corosync");
-                            log::debug!("[ROUTER] Commit message sent to Corosync.");
-                            corosync::send_message(&self.corosync_handle, welcome.as_slice())
-                                .expect("[ROUTER] Failed to send Welcome message through Corosync");
-                            log::debug!("[ROUTER] Welcome message sent to Corosync.");
+                    match self
+                        .mls_group_handler
+                        .process_incoming_delivery_service_message(&data)
+                    {
+                        Ok(Some((commit, welcome))) => {
+                            try_send!(&self.corosync_handle, "Commit", commit.as_slice());
+                            try_send!(&self.corosync_handle, "Welcome", welcome.as_slice());
                         }
                         Ok(None) => {
-                            log::debug!("[ROUTER] No Commit or Welcome generated from incoming delivery service message.");
+                            log::debug!("[ROUTER] No Commit or Welcome generated.");
                         }
                         Err(MlsEngineError::TrailingEpoch) => {
                             if self.wrong_epoch_timer.is_none() {
-                                log::warn!("Detected WrongEpoch. Starting recovery timer.");
+                                log::warn!("[ROUTER] Detected WrongEpoch. Starting recovery timer.");
                                 self.wrong_epoch_timer = Some(Instant::now());
                             }
                         }
-                        Err(_e) => {
+                        Err(e) => {
+                            log::error!("[ROUTER] Error processing delivery service message: {}", e);
                         }
                     }
                 }
@@ -252,16 +292,26 @@ impl Router {
                 // (Totem) Corosync Membership changes
                 Some(signal) = rx_corosync_signal.recv() => {
                     match signal {
-                        CorosyncSignal::NodeJoined(_node_ids)=>{}
-                        CorosyncSignal::NodeLeft(node_ids)=>{
-                            log::debug!("[ROUTER] Notified: Nodes left: {:?}",node_ids);
-                            if !node_ids.is_empty(){
-                                self.mls_group_handler.schedule_removal(node_ids.into_iter().map(Into::into).collect());
+                        CorosyncSignal::NodeJoined(node_ids) => {
+                            log::info!("[ROUTER] Node(s) joined: {:?}", node_ids);
+                        }
+
+                        CorosyncSignal::NodeLeft(node_ids) => {
+                            log::debug!("[ROUTER] Node(s) left: {:?}", node_ids);
+                            if !node_ids.is_empty() {
+                                self.mls_group_handler.schedule_removal(
+                                    node_ids.into_iter().map(Into::into).collect()
+                                );
+                                log::info!("[ROUTER] Scheduled removal for left nodes.");
                             }
                         }
-                        CorosyncSignal::GroupStatus(group)=> {
-                            self.mls_group_handler.update_totem_group(group.into_iter().map(Into::into).collect())
-                        },
+
+                        CorosyncSignal::GroupStatus(group) => {
+                            log::debug!("[ROUTER] Group status update: {:?}", group);
+                            self.mls_group_handler.update_totem_group(
+                                group.into_iter().map(Into::into).collect()
+                            );
+                        }
                     }
                 }
 
@@ -274,123 +324,97 @@ impl Router {
                 } => {
                     log::debug!("[ROUTER] CMD → MLS: Received {} bytes from {}", size, src);
 
-                    let command = parse_command(&buf[..size]);
-                    match command {
+                    match parse_command(&buf[..size]) {
                         Ok(Command::Add { key_package_bytes }) => {
-                            log::debug!(
-                                "[ROUTER] Received Add command for key_package ({} bytes).",
-                                key_package_bytes.len()
-                            );
-                            let (group_commit, welcome) =
-                                self.mls_group_handler.add_new_member_from_bytes(&key_package_bytes);
-                            log::debug!("[ROUTER] Add command processed: Commit and Welcome generated.");
-                            corosync::send_message(&self.corosync_handle, group_commit.as_slice())
-                                .expect("Failed to send Commit message through Corosync");
-                            log::debug!("[ROUTER] Commit message sent to Corosync.");
-                            corosync::send_message(&self.corosync_handle, welcome.as_slice())
-                                .expect("Failed to send Welcome message through Corosync");
-                            log::debug!("[ROUTER] Welcome message sent to Corosync.");
+                            log::debug!("[ROUTER] Add command received ({} bytes)", key_package_bytes.len());
+
+                            let (commit, welcome) = self.mls_group_handler
+                                .add_new_member_from_bytes(&key_package_bytes);
+
+                            try_send!(&self.corosync_handle, "Commit", commit.as_slice());
+
+                            try_send!(&self.corosync_handle, "Welcome", welcome.as_slice());
                         }
+
                         Ok(Command::AddPending) => {
-                            log::debug!("[ROUTER] Received AddPending command.");
+                            log::debug!("[ROUTER] AddPending command received.");
+
                             match self.mls_group_handler.add_pending_key_packages() {
-                                Ok(Some((group_commit, welcome))) => {
-                                    log::info!("[ROUTER] AddPending command processed: Commit and Welcome generated.");
-                                    corosync::send_message(&self.corosync_handle, group_commit.as_slice())
-                                        .expect("Failed to send Commit message through Corosync");
-                                    log::debug!("[ROUTER] Commit message sent to Corosync.");
-                                    corosync::send_message(&self.corosync_handle, welcome.as_slice())
-                                        .expect("Failed to send Welcome message through Corosync");
-                                    log::debug!("[ROUTER] Welcome message sent to Corosync.");
+                                Ok(Some((commit, welcome))) => {
+                                    log::info!("[ROUTER] AddPending: Commit and Welcome generated.");
+                                    try_send!(&self.corosync_handle, "Commit", commit.as_slice());
+                                    try_send!(&self.corosync_handle, "Welcome", welcome.as_slice());
                                 }
-                                Ok(None) => {log::debug!("[ROUTER] Call for add_pending_key_packages but No key packages to add");}
+                                Ok(None) => {
+                                    log::debug!("[ROUTER] No key packages to add.");
+                                }
                                 Err(e) => {
-                                    log::error!("[ROUTER] Error processing AddPending command: {}", e);
+                                    log::error!("[ROUTER] Error during AddPending: {}", e);
                                 }
                             }
                         }
+
                         Ok(Command::Remove { index }) => {
-                            log::debug!("[ROUTER] Received Remove command for LeafNode at index {}.", index);
-                            let (commit, _welcome_option) =
-                                self.mls_group_handler.remove_member(LeafNodeIndex::new(index));
-                            log::debug!("Remove command processed: Commit generated.");
-                            corosync::send_message(&self.corosync_handle, commit.as_slice())
-                                .expect("Failed to send Commit message through Corosync");
-                            log::debug!("Commit message sent to Corosync.");
+                            log::debug!("[ROUTER] Remove command received (index {}).", index);
+
+                            let (commit, _welcome_option) = self
+                                .mls_group_handler
+                                .remove_member(LeafNodeIndex::new(index));
+
+                            try_send!(&self.corosync_handle, "Commit", commit.as_slice());
                         }
+
                         Ok(Command::Update) => {
-                            log::debug!("[ROUTER] Received Update command.");
+                            log::debug!("[ROUTER] Update command received.");
                             match self.mls_group_handler.update_self() {
                                 Ok((commit, welcome_option)) => {
-                                    log::debug!("[ROUTER] Update command processed: Commit generated.");
-                                    corosync::send_message(&self.corosync_handle, commit.as_slice())
-                                        .expect("Failed to send Commit message through Corosync");
-                                    log::debug!("[ROUTER] Commit message sent to Corosync.");
+                                    try_send!(&self.corosync_handle, "Commit", commit.as_slice());
                                     if let Some(welcome) = welcome_option {
-                                        log::debug!("Update command processed: Welcome generated.");
-                                        corosync::send_message(&self.corosync_handle, welcome.as_slice())
-                                            .expect("Failed to send Welcome message through Corosync");
-                                        log::debug!("[ROUTER] Welcome message sent to Corosync.");
+                                        try_send!(&self.corosync_handle, "Welcome", welcome.as_slice());
                                     }
                                 }
                                 Err(e) => {
-                                    log::error!("[ROUTER] Error processing Update command: {}", e);
+                                    log::error!("Update command failed: {}", e);
                                 }
                             }
+                        }
 
-                        }
                         Ok(Command::RetrieveRatchetTree) => {
-                            log::debug!("[ROUTER] Received RetrieveRatchetTree command. \n Not implemented yet. Skipping operation...");
-                        }
-                        Ok(Command::ApplicationMsg { data }) => {
-                            log::debug!(
-                                "[ROUTER] Received ApplicationMsg command for {} bytes.",
-                                data.len()
-                            );
-                            match self
-                                .mls_group_handler
-                                .process_outgoing_application_message(&data)
-                            {
-                                Ok(out) => {
-                                    log::debug!(
-                                        "[ROUTER] Application message processed: Sending {} bytes to {}:{}.",
-                                        out.len(),
-                                        self.config.multicast_ip,
-                                        self.config.multicast_port
-                                    );
-                                    tx_network_socket
-                                        .send_to(
-                                            out.as_slice(),
-                                            format!("{}:{}", self.config.multicast_ip, self.config.multicast_port),
-                                        )
-                                        .await
-                                        .context("Failed to forward packet to network")?;
-                                }
-                                Err(e) => {
-                                    log::error!("[ROUTER] Error processing ApplicationMsg command: {}", e);
-                                }
-                            }
+                            log::debug!("[ROUTER] RetrieveRatchetTree command received (not implemented).");
                         }
 
                         Ok(Command::BroadcastKeyPackage) => {
-                            log::debug!("[ROUTER] Received BroadcastKeyPackage command.");
+                            log::debug!("[ROUTER] BroadcastKeyPackage command received.");
                             match self.mls_group_handler.get_key_package() {
                                 Ok(key_package) => {
-
-                                    log::debug!("[ROUTER] BroadcastKeyPackage command processed: Sending key package.");
-
-                                    corosync::send_message(&self.corosync_handle, key_package.as_slice())
-                                        .expect("Failed to send key package through Corosync");
-                                    log::debug!("Key package sent to Corosync.");
+                                    try_send!(&self.corosync_handle, "KeyPackage", key_package.as_slice());
                                 }
                                 Err(e) => {
-
-                                    log::error!("Error processing BroadcastKeyPackage command: {}", e);
+                                    log::error!("Failed to retrieve KeyPackage: {}", e);
                                 }
                             }
                         }
+
+                        Ok(Command::ApplicationMsg { data }) => {
+                            log::debug!("[ROUTER] ApplicationMsg command received ({} bytes)", data.len());
+                            match self.mls_group_handler.process_outgoing_application_message(&data) {
+                                Ok(out) => {
+                                    if let Err(e) = tx_network_socket
+                                        .send_to(out.as_slice(), format!("{}:{}", self.config.multicast_ip, self.config.multicast_port))
+                                        .await
+                                        .context("Failed to forward packet to network")
+                                    {
+                                        log::error!("[ROUTER] Failed to forward ApplicationMsg: {:?}", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("[ROUTER] Error processing ApplicationMsg: {}", e);
+                                }
+                            }
+                        }
+
                         Err(e) => {
-                            log::error!("[Router] Error parsing command: {}", e);
+                            log::error!("[ROUTER] Failed to parse command: {}", e);
                         }
                     }
                 }
@@ -400,25 +424,37 @@ impl Router {
               Ok((size, src, buf)) = async {
                 let mut buf = [0u8; MLS_MSG_BUFFER_SIZE];
                 let (size, src) = rx_network_socket.recv_from(&mut buf).await?;
-                Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; MLS_MSG_BUFFER_SIZE])>
+                Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; MLS_MSG_BUFFER_SIZE]), anyhow::Error>
             } => {
-                log::debug!("Network → MLS: {} bytes from {}", size, src);
-                match self.mls_group_handler.process_incoming_network_message(&buf[..size]){
+                log::debug!("[ROUTER] Network → MLS: Received {} bytes from {}", size, src);
+
+                match self.mls_group_handler.process_incoming_network_message(&buf[..size]) {
                     Ok(data) => {
                         self.wrong_epoch_timer = None;
-                        tx_app_socket
-                            .send_to(data.as_slice(), self.config.tx_app_sock_addr.clone())
+
+                        if let Err(e) = tx_app_socket
+                            .send_to(data.as_slice(), &self.config.tx_app_sock_addr)
                             .await
-                            .context("Failed to forward packet to application")?;
+                            .with_context(|| {
+                                format!(
+                                    "Failed to send decrypted data to application at {}",
+                                    self.config.tx_app_sock_addr
+                                )
+                            })
+                        {
+                            log::error!("[ROUTER] Error forwarding packet to application: {:?}", e);
+                        }
                     }
-                    Err(MlsEngineError::TrailingEpoch) | Err(MlsEngineError::ValidationError(_) )=> {
+
+                    Err(MlsEngineError::TrailingEpoch) | Err(MlsEngineError::ValidationError(_)) => {
                         if self.wrong_epoch_timer.is_none() {
-                            log::warn!("[Router] Detected WrongEpoch. Starting recovery timer.");
+                            log::warn!("[ROUTER] Detected WrongEpoch. Starting recovery timer.");
                             self.wrong_epoch_timer = Some(Instant::now());
                         }
                     }
+
                     Err(e) => {
-                        log::error!("[Router] Error processing incoming network message: {}", e);
+                        log::error!("[ROUTER] Error processing network message from {}: {}", src, e);
                     }
                 }
             }
@@ -427,21 +463,33 @@ impl Router {
             Ok((size, src, buf)) = async {
                 let mut buf = [0u8; MLS_MSG_BUFFER_SIZE];
                 let (size, src) = rx_app_socket.recv_from(&mut buf).await?;
-                Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; MLS_MSG_BUFFER_SIZE])>
+                Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; MLS_MSG_BUFFER_SIZE]), anyhow::Error>
             } => {
-                log::debug!("Application → MLS: {} bytes from {}", size, src);
-                match self.mls_group_handler.process_outgoing_application_message(&buf[..size]){
+                log::debug!(
+                    "[ROUTER] Application → MLS: Received {} bytes from {}",
+                    size,
+                    src
+                );
+
+                match self.mls_group_handler.process_outgoing_application_message(&buf[..size]) {
                     Ok(data) => {
+                        let target_addr = format!("{}:{}", self.config.multicast_ip, self.config.multicast_port);
+
                         if let Err(e) = tx_network_socket
-                        .send_to(data.as_slice(), format!("{}:{}", self.config.multicast_ip, self.config.multicast_port))
-                        .await
-                        .context("Failed to forward packet to network")
+                            .send_to(data.as_slice(), &target_addr)
+                            .await
+                            .with_context(|| format!("Failed to send encrypted packet to {}", target_addr))
                         {
-                            log::error!("[Router] Failed to forward packet to network: {:?}", e);
+                            log::error!("[ROUTER] Failed to forward encrypted AppData: {:?}", e);
                         }
                     }
+
                     Err(e) => {
-                        log::error!("[Router] Error processing appData coming from application: {}", e);
+                        log::error!(
+                            "[ROUTER] Failed to encrypt application data from {}: {}",
+                            src,
+                            e
+                        );
                     }
                 }
             }
@@ -454,162 +502,132 @@ impl Router {
                             log::error!("WrongEpoch timer expired! Resetting MLS group.");
                             // Reset MLS and Corosync group.
                             self.mls_group_handler.reset_group();
-                            /*match corosync::hard_reset_group(&self.corosync_handle, 3) {
-                                Ok(()) => {log::info!("Corosync group reset successfully.");},
-                                Err(e) => {log::error!("{}", e)},
-                            }*/
 
                             self.wrong_epoch_timer = None; // Reset the timer after recovering
                         }
                     }
                     match self.mls_group_handler.get_mls_group_state() {
                         MlsSwarmState::Alone => {
-                            // Check for pending Adds
+                            // Add pending key packages
                             match self.mls_group_handler.add_pending_key_packages() {
-                                Ok(Some((group_commit, welcome))) => {
-                                    log::debug!("[ROUTER] Added pending key packages, sending commit and welcome.");
-                                    corosync::send_message(&self.corosync_handle, group_commit.as_slice())
-                                        .expect("Failed to send Commit message through Corosync");
-                                    log::debug!("[Router] Commit message sent to Corosync.");
-                                    corosync::send_message(&self.corosync_handle, welcome.as_slice())
-                                        .expect("Failed to send Welcome message through Corosync");
-                                    log::debug!("[Router] Welcome message sent to Corosync.");
+                                Ok(Some((commit, welcome))) => {
+                                    log::debug!("[ROUTER] Added pending key packages.");
+                                    try_send!(&self.corosync_handle, "Commit", commit.as_slice());
+                                    try_send!(&self.corosync_handle, "Welcome", welcome.as_slice());
                                 }
-                                Ok(None) => {log::debug!("[Router] No key packages to add");}
-                                Err(e) => {
-                                    log::error!("[Router] Error processing AddPending command: {}", e);
-                                }
+                                Ok(None) => log::debug!("[ROUTER] No key packages to add."),
+                                Err(e) => log::error!("[ROUTER] AddPending failed: {}", e),
                             }
 
-                            // Broadcast KeyPackage
+                            // Broadcast own key package for dicovery
                             match self.mls_group_handler.get_key_package() {
                                 Ok(key_package) => {
-                                    log::debug!("[Router] GCS not in MlsGroup. Broadcasting key package via Corosync.");
-                                    corosync::send_message(&self.corosync_handle, key_package.as_slice())
-                                        .expect("Failed to send key package through Corosync");
+                                    log::debug!("[ROUTER] Broadcasting key package.");
+                                    try_send!(&self.corosync_handle, "KeyPackage", key_package.as_slice());
                                 }
-                                Err(e) => {
-                                    log::error!("[ROUTER] Error Broadcasting KeyPackage: {}", e);
-                                }
+                                Err(e) => log::error!("[ROUTER] Failed to retrieve key package: {}", e),
                             }
                         }
                         MlsSwarmState::SubGroup => {
-                            // Check for pending Removals
+                            // Check for removals
                             if self.mls_group_handler.have_pending_removals() {
                                 match self.mls_group_handler.remove_pending() {
-                                    Ok((commit, welcome_option)) => {
-                                        corosync::send_message(&self.corosync_handle, commit.as_slice())
-                                        .expect("Failed to send message through Corosync");
-                                        log::info!("✅ Automatic removal successful.");
-                                        if let Some(welcome) = welcome_option {
-                                            corosync::send_message(&self.corosync_handle, welcome.as_slice())
-                                            .expect("Failed to send message through Corosync");
+                                    Ok((commit, welcome_opt)) => {
+                                        log::info!("[ROUTER] ✅ Automatic removal succeeded.");
+                                        try_send!(&self.corosync_handle, "Commit", commit.as_slice());
+                                        if let Some(welcome) = welcome_opt {
+                                            try_send!(&self.corosync_handle, "Welcome", welcome.as_slice());
                                         }
                                     }
-                                    Err(e) => log::error!("❌ Automatic removal failed: {:?}", e),
+                                    Err(e) => log::error!("❌ Automatic removal failed: {}", e),
                                 }
                             }
-                            // Check for pending Adds
+                            // Add pending key packages
                             match self.mls_group_handler.add_pending_key_packages() {
-                                Ok(Some((group_commit, welcome))) => {
-                                    log::info!("[ROUTER] ✅ Added pending key packages, sending commit and welcome.");
-                                    corosync::send_message(&self.corosync_handle, group_commit.as_slice())
-                                        .expect("Failed to send Commit message through Corosync");
-                                    log::debug!("[ROUTER] Commit message sent to Corosync.");
-                                    corosync::send_message(&self.corosync_handle, welcome.as_slice())
-                                        .expect("Failed to send Welcome message through Corosync");
-                                    log::debug!("[ROUTER] Welcome message sent to Corosync.");
+                                Ok(Some((commit, welcome))) => {
+                                    log::info!("[ROUTER] ✅ Added pending key packages.");
+                                    try_send!(&self.corosync_handle, "Commit", commit.as_slice());
+                                    try_send!(&self.corosync_handle, "Welcome", welcome.as_slice());
                                 }
-                                Ok(None) => {log::debug!("[ROUTER] No key packages to add");}
-                                Err(e) => {
-                                    log::error!("[ROUTER] Error processing AddPending command: {}", e);
-                                }
+                                Ok(None) => log::debug!("[ROUTER] No key packages to add."),
+                                Err(e) => log::error!("❌ AddPending failed: {}", e),
                             }
-
-                            // Update self
+                            // Update own key material
                             match self.mls_group_handler.update_self() {
-                                Ok((commit, welcome_option)) => {
-                                    corosync::send_message(&self.corosync_handle, commit.as_slice())
-                                    .expect("Failed to send message through Corosync");
-                                    log::info!("✅ Automatic self-update successful.");
-                                    if let Some(welcome) = welcome_option {
-                                        corosync::send_message(&self.corosync_handle, welcome.as_slice())
-                                        .expect("Failed to send message through Corosync");
+                                Ok((commit, welcome_opt)) => {
+                                    log::info!("[ROUTER] ✅ Self-update successful.");
+                                    try_send!(&self.corosync_handle, "Commit", commit.as_slice());
+                                    if let Some(welcome) = welcome_opt {
+                                        try_send!(&self.corosync_handle, "Welcome", welcome.as_slice());
                                     }
                                 }
-                                Err(e) => log::error!("❌ Self-update failed: {:?}", e),
+                                Err(e) => log::error!("❌ Self-update failed: {}", e),
                             }
-
-
-                            // Broadcast KeyPackage
+                            // Broadcast own key package for discovery
                             match self.mls_group_handler.get_key_package() {
                                 Ok(key_package) => {
-                                    log::info!("[ROUTER] GCS not in MlsGroup. Broadcasting key package.");
-                                    corosync::send_message(&self.corosync_handle, key_package.as_slice())
-                                        .expect("Failed to send key package through Corosync");
-                                    log::info!("[ROUTER] Key package sent to Corosync.");
+                                    log::info!("[ROUTER] Broadcasting key package (SubGroup).");
+                                    try_send!(&self.corosync_handle, "KeyPackage", key_package.as_slice());
                                 }
-                                Err(e) => {
-                                    log::error!("[ROUTER] Error Broadcasting KeyPackage: {}", e);
-                                }
-                            }
-                        },
-                        MlsSwarmState::MainGroup => {
-                            // Check for pending Removals
-                            if self.mls_group_handler.have_pending_removals() {
-                                match self.mls_group_handler.remove_pending() {
-                                    Ok((commit, welcome_option)) => {
-                                        log::info!("✅ Automatic removal successful.");
-                                        corosync::send_message(&self.corosync_handle, commit.as_slice())
-                                        .expect("Failed to send message through Corosync");
-                                        if let Some(welcome) = welcome_option {
-                                            corosync::send_message(&self.corosync_handle, welcome.as_slice())
-                                            .expect("Failed to send message through Corosync");
-                                        }
-                                    }
-                                    Err(e) => log::error!("❌ Automatic removal failed: {:?}", e),
-                                }
-                            }
-                            // Check for pending Adds
-                            match self.mls_group_handler.add_pending_key_packages() {
-                                Ok(Some((group_commit, welcome))) => {
-                                    log::info!("[ROUTER] ✅ Added pending key packages, sending commit and welcome.");
-                                    corosync::send_message(&self.corosync_handle, group_commit.as_slice())
-                                        .expect("Failed to send Commit message through Corosync");
-                                    log::debug!("[ROUTER] Commit message sent to Corosync.");
-                                    corosync::send_message(&self.corosync_handle, welcome.as_slice())
-                                        .expect("Failed to send Welcome message through Corosync");
-                                    log::debug!("[ROUTER] Welcome message sent to Corosync.");
-                                }
-                                Ok(None) => {log::debug!("[ROUTER] No key packages to add");}
-                                Err(e) => {
-                                    log::error!("[ROUTER] Error processing AddPending command: {}", e);
-                                }
-                            }
-
-                            // Update self
-                            match self.mls_group_handler.update_self() {
-                                Ok((commit, welcome_option)) => {
-                                    log::info!("✅ Automatic self-update successful.");
-                                    corosync::send_message(&self.corosync_handle, commit.as_slice())
-                                    .expect("Failed to send message through Corosync");
-                                    if let Some(welcome) = welcome_option {
-                                        corosync::send_message(&self.corosync_handle, welcome.as_slice())
-                                        .expect("Failed to send message through Corosync");
-                                    }
-                                }
-                                Err(e) => log::error!("❌ Self-update failed: {:?}", e),
-                            }
+                                Err(e) => log::error!("❌ Failed to retrieve key package: {}", e),
                             }
                         }
+
+                        MlsSwarmState::MainGroup => {
+                            // Check for removals
+                            if self.mls_group_handler.have_pending_removals() {
+                                match self.mls_group_handler.remove_pending() {
+                                    Ok((commit, welcome_opt)) => {
+                                        log::info!("[ROUTER] ✅ Automatic removal succeeded.");
+                                        try_send!(&self.corosync_handle, "Commit", commit.as_slice());
+                                        if let Some(welcome) = welcome_opt {
+                                            try_send!(&self.corosync_handle, "Welcome", welcome.as_slice());
+                                        }
+                                    }
+                                    Err(e) => log::error!("❌ Automatic removal failed: {}", e),
+                                }
+                            }
+                            // Add pending key packages
+                            match self.mls_group_handler.add_pending_key_packages() {
+                                Ok(Some((commit, welcome))) => {
+                                    log::info!("[ROUTER] ✅ Added pending key packages.");
+                                    try_send!(&self.corosync_handle, "Commit", commit.as_slice());
+                                    try_send!(&self.corosync_handle, "Welcome", welcome.as_slice());
+                                }
+                                Ok(None) => log::debug!("[ROUTER] No key packages to add."),
+                                Err(e) => log::error!("❌ AddPending failed: {}", e),
+                            }
+                            // Update own key material
+                            match self.mls_group_handler.update_self() {
+                                Ok((commit, welcome_opt)) => {
+                                    log::info!("[ROUTER] ✅ Self-update successful.");
+                                    try_send!(&self.corosync_handle, "Commit", commit.as_slice());
+                                    if let Some(welcome) = welcome_opt {
+                                        try_send!(&self.corosync_handle, "Welcome", welcome.as_slice());
+                                    }
+                                }
+                                Err(e) => log::error!("❌ Self-update failed: {}", e),
+                            }
+
+                            // NOTE: No key package broadcast here
+                        }
+                    }
                 }
 
                 // Handle Ctrl+C (Shutdown)
                 _ = signal::ctrl_c() => {
                     println!("\n🛑 Ctrl+C detected! Shutting down gracefully...");
-                    // Finalize Corosync to unblock the blocking receive thread
-                    rust_corosync::cpg::finalize(self.corosync_handle).expect("Failed to finalize Corosync");
-                    log::info!("Finalized called");
+
+                    match rust_corosync::cpg::finalize(self.corosync_handle) {
+                        Ok(_) => {
+                            log::info!("[ROUTER] Corosync finalized successfully.");
+                        }
+                        Err(e) => {
+                            log::error!("[ROUTER] Failed to finalize Corosync: {}", e);
+                        }
+                    }
+
+                    log::info!("[ROUTER] Shutdown complete. Exiting main loop.");
                     break;
                 }
 
