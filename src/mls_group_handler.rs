@@ -1,9 +1,9 @@
 use crate::authentication::ed25519::Ed25519SignatureKeyPair;
 use crate::authentication::{self, Ed25519credential};
 use crate::config::MlsConfig;
-use anyhow::{Context, Error};
+use anyhow::{Context, Error, Result};
 use openmls::group::MlsGroup;
-use openmls::prelude::{group_info::VerifiableGroupInfo, *};
+use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use std::collections::{HashMap, HashSet};
@@ -35,11 +35,12 @@ pub struct MlsEngine {
 }
 
 pub trait MlsSwarmLogic {
-    fn add_new_member(&mut self, key_package: KeyPackage) -> (Vec<u8>, Vec<u8>);
-    fn add_new_member_from_bytes(&mut self, key_package_bytes: &[u8]) -> (Vec<u8>, Vec<u8>);
+    fn add_new_member(&mut self, key_package: KeyPackage) -> Result<(Vec<u8>, Vec<u8>)>;
+    fn add_new_member_from_bytes(&mut self, key_package_bytes: &[u8])
+        -> Result<(Vec<u8>, Vec<u8>)>;
     fn add_pending_key_packages(&mut self) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error>;
 
-    fn remove_member(&mut self, leaf_node: LeafNodeIndex) -> (Vec<u8>, Option<Vec<u8>>);
+    fn remove_member(&mut self, leaf_node: LeafNodeIndex) -> Result<(Vec<u8>, Option<Vec<u8>>)>;
 
     fn update_self(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error>;
 
@@ -53,26 +54,21 @@ pub trait MlsSwarmLogic {
 
     fn credential_present_in_group(&self, credential: Credential) -> bool;
 
-    #[allow(dead_code)]
-    fn retrieve_ratchet_tree(&self) -> Vec<u8>;
-
-    fn process_incoming_network_message(
-        &mut self,
-        message: &[u8],
-    ) -> Result<Vec<u8>, MlsEngineError>;
+    fn process_incoming_network_message(&mut self, message: &[u8]) -> Result<Vec<u8>>;
     fn process_incoming_delivery_service_message(
         &mut self,
         message: &[u8],
-    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, MlsEngineError>;
+    ) -> Result<Option<(Vec<u8>, Vec<u8>)>>;
+    fn process_protocol_message<M>(&mut self, msg: M) -> Result<Option<(Vec<u8>, Vec<u8>)>>
+    where
+        M: Into<ProtocolMessage> + std::fmt::Debug;
     fn process_outgoing_application_message(&mut self, message: &[u8]) -> Result<Vec<u8>, Error>;
 
-    fn handle_incoming_welcome(&mut self, welcome: Welcome) -> Result<(), Error>;
-    fn handle_incoming_group_info(&mut self, group_info: VerifiableGroupInfo);
+    fn handle_incoming_welcome(&mut self, welcome: Welcome) -> Result<()>;
     fn handle_incoming_key_package(&mut self, key_package_in: KeyPackageIn);
     fn handle_incoming_commit(&mut self, commit: StagedCommit) -> Result<(), Error>;
 }
 
-#[allow(dead_code)]
 impl MlsEngine {
     pub fn new(config: MlsConfig) -> Self {
         let provider = OpenMlsRustCrypto::default();
@@ -138,15 +134,14 @@ impl MlsEngine {
             .expect("Error loading group")
     }
 
-    pub fn get_key_package(&mut self) -> Result<Vec<u8>, Error> {
-        // self.refresh_key_package()?;
+    pub fn get_key_package(&mut self) -> Result<Vec<u8>> {
         let key_package = MlsMessageOut::from(self.key_package.key_package().clone());
         key_package
             .tls_serialize_detached()
             .context("Error serializing key package")
     }
 
-    pub fn refresh_key_package(&mut self) -> Result<(), Error> {
+    pub fn refresh_key_package(&mut self) -> Result<()> {
         self.key_package = generate_key_package(
             self.group.ciphersuite(),
             &self.provider,
@@ -175,281 +170,94 @@ impl MlsEngine {
 }
 
 impl MlsSwarmLogic for MlsEngine {
-    fn process_incoming_network_message(
-        &mut self,
-        mut buf: &[u8],
-    ) -> Result<Vec<u8>, MlsEngineError> {
-        // Deserialize incoming TLS message
-        let message_in = MlsMessageIn::tls_deserialize(&mut buf).map_err(|e| {
-            log::error!("[Router] Error deserializing TLS message: {:?}", e);
-            MlsEngineError::TlsSerializationError
-        })?;
+    fn process_incoming_network_message(&mut self, buf: &[u8]) -> Result<Vec<u8>> {
+        let message_in = MlsMessageIn::tls_deserialize(&mut &*buf)
+            .context("Failed to deserialize incoming MLS message")?;
 
-        match message_in.clone().extract() {
-            MlsMessageBodyIn::PublicMessage(msg) => {
-                let processed = self
-                    .group
-                    .process_message(&self.provider, msg)
-                    .map_err(|_| MlsEngineError::ProcessMessageError)?;
+        let protocol_msg = ProtocolMessage::try_from(message_in)
+            .context("Failed to convert to ProtocolMessage")?;
+
+        let result = self.group.process_message(&self.provider, protocol_msg);
+
+        match result {
+            Ok(processed) => {
+                let sender = processed.sender().clone(); // get sender first
 
                 match processed.into_content() {
-                    ProcessedMessageContent::ApplicationMessage(payload) => {
-                        let content_bytes = payload.into_bytes();
-                        let preview = std::str::from_utf8(&content_bytes)
-                            .map(|text| &text[..text.len().min(50)])
-                            .unwrap_or("<non-UTF8 data>");
-                        log::debug!("[MlsEngine] Decrypted application message: {}", preview);
-                        Ok(content_bytes)
+                    ProcessedMessageContent::ApplicationMessage(app_msg) => {
+                        log::debug!("[MLS] Received AppData message from sender {:?}", sender);
+                        Ok(app_msg.into_bytes())
                     }
-                    _ => Err(MlsEngineError::ProposalOverApplicationChannel),
+                    other => Err(anyhow::anyhow!(
+                        "Expected ApplicationMessage, got: {:?}",
+                        other
+                    )),
                 }
             }
 
-            MlsMessageBodyIn::PrivateMessage(msg) => {
-                match self.group.process_message(&self.provider, msg.clone()) {
-                    Ok(processed) => {
-                        if let Sender::Member(leaf_index) = processed.sender() {
-                            self.last_received.insert(*leaf_index, SystemTime::now());
-                        }
-
-                        match processed.into_content() {
-                            ProcessedMessageContent::ApplicationMessage(payload) => {
-                                let content_bytes = payload.into_bytes();
-                                let preview = std::str::from_utf8(&content_bytes)
-                                    .map(|text| &text[..text.len().min(50)])
-                                    .unwrap_or("<non-UTF8 data>");
-                                log::info!(
-                                    "[MlsEngine] Decrypted application message: {}",
-                                    preview
-                                );
-                                Ok(content_bytes)
-                            }
-                            _ => Err(MlsEngineError::ProposalOverApplicationChannel),
-                        }
-                    }
-
-                    Err(e) => match e {
-                        ProcessMessageError::ValidationError(val_error) => match val_error {
-                            ValidationError::WrongEpoch => {
-                                if self.group.epoch().as_u64()
-                                    < message_in
-                                        .try_into_protocol_message()
-                                        .unwrap()
-                                        .epoch()
-                                        .as_u64()
-                                {
-                                    log::error!("### Trailing error ### ");
-                                    Err(MlsEngineError::TrailingEpoch)
-                                } else {
-                                    Err(MlsEngineError::FutureEpoch)
-                                }
-                            }
-
-                            _ => Err(MlsEngineError::ValidationError(val_error)),
-                        },
-                        _ => Err(MlsEngineError::from(e)),
-                    },
-                }
-            }
-
-            MlsMessageBodyIn::Welcome(_) => Err(MlsEngineError::WelcomeOverApplicationChannel),
-            MlsMessageBodyIn::GroupInfo(_) => Err(MlsEngineError::GroupInfoOverApplicationChannel),
-            MlsMessageBodyIn::KeyPackage(_) => {
-                Err(MlsEngineError::KeyPackageOverApplicationChannel)
-            }
+            Err(e) => Err(anyhow::anyhow!(e).context("Failed to process MLS message")),
         }
     }
 
-    fn process_outgoing_application_message(&mut self, message: &[u8]) -> Result<Vec<u8>, Error> {
+    fn process_outgoing_application_message(&mut self, message: &[u8]) -> Result<Vec<u8>> {
         let mls_message = self
             .group
             .create_message(&self.provider, &self.signature_key, message)
-            .expect("Error encrypting message.");
+            .context("Error encrypting message.")?;
 
         let serialized_message = mls_message
             .tls_serialize_detached()
-            .expect("Error serializing message.");
+            .context("Error serializing message.")?;
         Ok(serialized_message)
     }
 
     fn process_incoming_delivery_service_message(
         &mut self,
-        mut buf: &[u8],
-    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, MlsEngineError> {
-        log::debug!(
-            "Processing incoming delivery service message. \n Group epoch before processing: {:?}",
-            self.group.epoch()
-        );
+        buf: &[u8],
+    ) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        let message_in = MlsMessageIn::tls_deserialize(&mut &*buf)
+            .context("Failed to deserialize delivery service MLS message")?;
 
-        let message_in =
-            MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
-
-        match message_in.clone().extract() {
-            MlsMessageBodyIn::PublicMessage(msg) => {
-                let processed_message = self
-                    .group
-                    .process_message(&self.provider, msg)
-                    .expect("Error processing message");
-
-                // Validate sender's Credential
-                match self.verify_credential(processed_message.credential().clone(), None) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        log::error!("Error verifying sender's credential: {:?}", e);
-                        return Err(MlsEngineError::CredentialVerificationError);
-                    }
-                }
-
-                match processed_message.into_content() {
-                    ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
-                        log::warn!(
-                            "Received PublicMessage containing StagedCommitMessage. Should be sent as PrivateMessage.",
-                        );
-                        match self.handle_incoming_commit(*staged_commit) {
-                            Ok(_) => {}
-                            Err(e) => {
-                                log::error!("Error handling incoming commit: {:?}", e);
-                            }
-                        }
-                    }
-                    ProcessedMessageContent::ProposalMessage(proposal) => {
-                        log::warn!(
-                            "Received PublicMessage containing Proposal. Should be sent as PrivateMessage.",
-                        );
-                        let _ = self
-                            .group
-                            .store_pending_proposal(self.provider.storage(), *proposal.clone())
-                            .context("Error storing proposal.");
-                    }
-                    ProcessedMessageContent::ExternalJoinProposalMessage(_) => {
-                        return Err(MlsEngineError::NotSupported)
-                    }
-                    ProcessedMessageContent::ApplicationMessage(_) => {
-                        return Err(MlsEngineError::ApplicationMessageOverPublicChannel)
-                    }
-                }
+        match message_in.extract() {
+            MlsMessageBodyIn::Welcome(welcome) => {
+                self.handle_incoming_welcome(welcome)
+                    .context("Failed to process Welcome message")?;
                 Ok(None)
             }
 
-            MlsMessageBodyIn::PrivateMessage(msg) => {
-                match self.group.process_message(&self.provider, msg) {
-                    Ok(processed_message) => {
-                        // Validate sender's Credential
-                        match self.verify_credential(processed_message.credential().clone(), None) {
-                            Ok(_) => {}
-                            Err(e) => {
-                                log::error!("Error verifying sender's credential: {:?}", e);
-                                return Err(MlsEngineError::CredentialVerificationError);
-                            }
-                        }
-
-                        if let Sender::Member(leaf_index) = processed_message.sender() {
-                            self.last_received.insert(*leaf_index, SystemTime::now());
-                        }
-
-                        match processed_message.into_content() {
-                            ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
-                                match self.handle_incoming_commit(*staged_commit) {
-                                    Ok(_) => {}
-                                    Err(e) => {
-                                        log::error!("Error handling incoming commit: {:?}", e);
-                                    }
-                                }
-                            }
-                            ProcessedMessageContent::ProposalMessage(proposal) => {
-                                let _ = self
-                                    .group
-                                    .store_pending_proposal(
-                                        self.provider.storage(),
-                                        *proposal.clone(),
-                                    )
-                                    .context("Error storing proposal.");
-                            }
-                            ProcessedMessageContent::ExternalJoinProposalMessage(_) => {
-                                return Err(MlsEngineError::NotSupported);
-                            }
-                            ProcessedMessageContent::ApplicationMessage(_) => {
-                                return Err(MlsEngineError::NotSupported);
-                            }
-                        }
-                        Ok(None)
-                    }
-                    Err(e) => match e {
-                        ProcessMessageError::ValidationError(val_error) => match val_error {
-                            ValidationError::WrongEpoch => {
-                                if self.group.epoch().as_u64()
-                                    < message_in
-                                        .try_into_protocol_message()
-                                        .unwrap()
-                                        .epoch()
-                                        .as_u64()
-                                {
-                                    log::error!("### Trailing error ### ");
-                                    return Err(MlsEngineError::TrailingEpoch);
-                                } else {
-                                    return Err(MlsEngineError::FutureEpoch);
-                                }
-                            }
-
-                            _ => {
-                                return Err(MlsEngineError::ValidationError(val_error));
-                            }
-                        },
-                        _ => Err(MlsEngineError::from(e)),
-                    },
-                }
-            }
-            MlsMessageBodyIn::Welcome(welcome) => match self.handle_incoming_welcome(welcome) {
-                Ok(_) => Ok(None),
-                Err(e) => Err(MlsEngineError::GeneralError(e)),
-            },
-            MlsMessageBodyIn::GroupInfo(group_info) => {
-                self.handle_incoming_group_info(group_info);
+            MlsMessageBodyIn::KeyPackage(kp_in) => {
+                self.handle_incoming_key_package(kp_in);
                 Ok(None)
             }
-            MlsMessageBodyIn::KeyPackage(key_package_in) => {
-                self.handle_incoming_key_package(key_package_in);
-                Ok(None)
-            }
+
+            MlsMessageBodyIn::GroupInfo(group_info) => Err(anyhow::anyhow!(
+                "Received unsupported GroupInfo message: {:?}. External joins are not supported.",
+                group_info
+            )),
+
+            MlsMessageBodyIn::PrivateMessage(msg) => self.process_protocol_message(msg),
+
+            MlsMessageBodyIn::PublicMessage(msg) => self.process_protocol_message(msg),
         }
     }
 
-    fn handle_incoming_welcome(&mut self, welcome: Welcome) -> Result<(), Error> {
-        log::debug!(
-            "[MlsEngine] Node {:?} received Welcome message",
-            self.config.node_id,
-        );
-
+    fn handle_incoming_welcome(&mut self, welcome: Welcome) -> Result<()> {
         let staged_join =
             StagedWelcome::new_from_welcome(&self.provider, &self.group_join_config, welcome, None)
-                .map_err(|e| {
-                    log::error!("[MlsEngine] Error constructing staged join: {:?}", e);
-                    e
-                })?;
+                .context("Error constructing staged join from Welocme")?;
 
         let sender_index = staged_join.welcome_sender_index();
 
-        let future_group = staged_join.into_group(&self.provider).map_err(|e| {
-            log::error!(
-                "[MlsEngine] Error joining group from StagedWelcome: {:?}",
-                e
-            );
-            log::error!(
-                "[MlsEngine] Error joining group from StagedWelcome: {:?}",
-                e
-            );
-            Error::msg("Failed to convert staged join into group")
-        })?;
+        let future_group = staged_join
+            .into_group(&self.provider)
+            .context("Error constructing group from staged_join")?;
 
-        let sender = future_group.member(sender_index).ok_or_else(|| {
-            log::error!("[MlsEngine] Sender not found in group.");
-            Error::msg("Sender not found in group.")
-        })?;
+        let sender = future_group
+            .member(sender_index)
+            .ok_or_else(|| Error::msg("Sender not found in group."))?;
 
-        self.verify_credential(sender.clone(), None).map_err(|e| {
-            log::error!("[MlsEngine] Error verifying sender's credential: {:?}", e);
-            e
-        })?;
+        self.verify_credential(sender.clone(), None)
+            .context("Error verifying credential from Welcome message")?;
 
         if self.should_join(&future_group) {
             self.group = future_group;
@@ -464,124 +272,135 @@ impl MlsSwarmLogic for MlsEngine {
             return Ok(());
         }
 
-        log::debug!("Received Welcome for a subgroup smaller than ours. Discarding.");
+        log::debug!("[MlsEngine] Welcome message discarded: subgroup does not satisfy join policy");
         Ok(())
     }
 
-    fn handle_incoming_group_info(&mut self, _group_info: VerifiableGroupInfo) {
-        log::warn!("Received GroupInfo message. No action taken. GroupInfo implies the use of external joins, which it not supported.");
-    }
-
     fn handle_incoming_key_package(&mut self, key_package_in: KeyPackageIn) {
+        let id = id_from_credential(&key_package_in.unverified_credential().credential);
+        log::debug!(
+            "[MlsEngine] Received KeyPackage for credential ID {:?}.",
+            id
+        );
         // Check if KeyPackage is from someone within the group
         if self.credential_present_in_group(key_package_in.unverified_credential().credential) {
-            log::debug!(
-                "[MlsEngine] Received KeyPackage from someone in our group. Discarding it."
-            );
+            log::debug!("[MlsEngine] KeyPackage was from someone in our group. Discarding it.");
             return;
         }
 
         // Verify credential and store key package
-        log::info!("KEYPACKAGE Received KeyPackage message. Verifying and  storing it.");
-        match self.verify_credential(
+        if let Err(e) = self.verify_credential(
             key_package_in.unverified_credential().credential,
             Some(&key_package_in.unverified_credential().signature_key),
         ) {
-            Ok(_) => {
-                let key_package = key_package_in
-                    .validate(self.provider.crypto(), ProtocolVersion::Mls10)
-                    .expect("Error validating KeyPackage");
-                self.store_key_package(key_package.clone());
-                log::debug!("Credential verified and validated successfully.");
-            }
-            Err(e) => log::error!("Error verifying credential: {:?}", e),
+            log::warn!("[MlsEngine] Could not verify KeyPackage. Error: {}", e);
+            return;
         }
+        let key_package =
+            match key_package_in.validate(self.provider.crypto(), ProtocolVersion::Mls10) {
+                Ok(kp) => kp,
+                Err(e) => {
+                    log::error!("[MlsEngine] Error validating KeyPackage: {}", e);
+                    return;
+                }
+            };
+
+        self.store_key_package(key_package.clone());
+        log::debug!("[MlsEngine] Credential verified and validated successfully.");
     }
 
-    fn add_new_member(&mut self, key_package: KeyPackage) -> (Vec<u8>, Vec<u8>) {
-        let (group_commit, welcome, _group_info) = self
+    fn process_protocol_message<M>(&mut self, msg: M) -> Result<Option<(Vec<u8>, Vec<u8>)>>
+    where
+        M: Into<ProtocolMessage> + std::fmt::Debug,
+    {
+        let protocol_msg = msg.into();
+
+        let processed = self
             .group
-            .add_members(&self.provider, &self.signature_key, &[key_package.clone()])
-            .expect("Could not add members.");
+            .process_message(&self.provider, protocol_msg)
+            .context("Failed to process ProtocolMessage")?;
 
-        log::info!(
-            "Added new member {:?} for group: {:?}",
-            key_package.leaf_node().credential(),
-            self.group.group_id()
-        );
+        let sender = processed.sender().clone();
 
-        // TODO: Fix error handling. This will panic if serialization fails.
-        let group_commit_out = group_commit
-            .tls_serialize_detached()
-            .expect("Error serializing group commit");
-        let welcome_out = welcome
-            .tls_serialize_detached()
-            .expect("Error serializing welcome");
-        (group_commit_out, welcome_out)
+        match processed.into_content() {
+            ProcessedMessageContent::StagedCommitMessage(commit) => {
+                log::debug!("[MLS] Received staged commit from {:?}, merging.", sender);
+                self.handle_incoming_commit(*commit)
+                    .context("Failed to handle incoming commit")?;
+                Ok(None)
+            }
+
+            ProcessedMessageContent::ProposalMessage(_) => {
+                log::debug!("[MLS] Received proposal from {:?}.", sender);
+                Ok(None)
+            }
+
+            other => Err(anyhow::anyhow!(
+                "Unexpected message type in delivery service: {:?}",
+                other
+            )),
+        }
     }
 
-    fn add_pending_key_packages(&mut self) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
-        let mut key_packages = Vec::new();
-        for (_key_ref, key_package) in self.pending_key_packages.iter() {
-            key_packages.push(key_package.clone());
-        }
-
-        // Early return if there are no key packages to add
-        if key_packages.is_empty() {
+    fn add_pending_key_packages(&mut self) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        if self.pending_key_packages.is_empty() {
+            log::debug!("[MlsEngine] No pending key packages to add.");
             return Ok(None);
         }
 
-        match self.can_add(&key_packages) {
-            false => {
-                log::debug!("[MlsEngine] Should not add pending key packages. Clearing pending key package list.");
-                self.pending_key_packages.clear();
-                Ok(None)
-            }
-            true => {
-                let (group_commit, welcome, _group_info) =
-                    self.group
-                        .add_members(&self.provider, &self.signature_key, &key_packages)?;
-
-                let group_commit_out = group_commit
-                    .tls_serialize_detached()
-                    .expect("Error serializing group commit");
-
-                let welcome_out = welcome
-                    .tls_serialize_detached()
-                    .expect("Error serializing welcome");
-
-                let _ = self.group.merge_pending_commit(&self.provider);
-                self.pending_key_packages.clear();
-
-                Ok(Some((group_commit_out, welcome_out)))
-            }
+        // If we can't add pending key packages, clear the list. Write to log.
+        if !self.can_add() {
+            log::debug!(
+                "[MlsEngine] Group policy prevents adding pending key packages. Clearing list."
+            );
+            self.pending_key_packages.clear();
+            return Ok(None);
         }
+
+        let key_packages: Vec<KeyPackage> = self.pending_key_packages.values().cloned().collect();
+
+        let (group_commit, welcome, _group_info) =
+            self.group
+                .add_members(&self.provider, &self.signature_key, &key_packages)?;
+
+        let group_commit_out = group_commit
+            .tls_serialize_detached()
+            .context("Error serializing group commit")?;
+
+        let welcome_out = welcome
+            .tls_serialize_detached()
+            .context("Error serializing welcome")?;
+
+        self.group
+            .merge_pending_commit(&self.provider)
+            .context("Failed to merge pending commit")?;
+
+        self.pending_key_packages.clear();
+
+        log::info!(
+            "[MLS] Added {} pending key package(s) to group {:?}",
+            key_packages.len(),
+            self.group.group_id()
+        );
+
+        Ok(Some((group_commit_out, welcome_out)))
     }
 
-    fn handle_incoming_commit(&mut self, commit: StagedCommit) -> Result<(), Error> {
+    fn handle_incoming_commit(&mut self, commit: StagedCommit) -> Result<()> {
         // Handle ADD operations: remove from pending_key_packages & verify new credentials
+        println!("!!COMMIT!!");
         for add in commit.add_proposals() {
+            println!("FOUND ADD IN COMMIT!!");
             let key_package = add.add_proposal().key_package().clone();
 
             let key_ref: hash_ref::HashReference = key_package
                 .hash_ref(self.provider.crypto())
-                .expect("Error getting hash_ref from KeyPackage");
-
+                .context("Error getting hash_ref from KeyPackage")?;
+            println!("Key_ref: {:?}", key_ref);
             if let Some(removed) = self.pending_key_packages.remove(&key_ref) {
                 log::info!("Removed pending KeyPackage: {:?}", removed);
             }
         }
-        /*
-        for unverified_credential in commit.credentials_to_verify() {
-            match self.verify_credential(unverified_credential.clone(), None) {
-                Ok(_) => {}
-                Err(e) => {
-                    log::error!("Error verifying credential: {:?}", e);
-                    return Err(e);
-                }
-            }
-        }
-         */
 
         // Handle REMOVE operations: remove LeafNodeIndex in pending_removals list (array)
         for remove in commit.remove_proposals() {
@@ -589,98 +408,130 @@ impl MlsSwarmLogic for MlsEngine {
             self.pending_removals.retain(|idx| *idx != removed_index);
         }
 
-        let _ = self
-            .group
+        self.group
             .merge_staged_commit(&self.provider, commit)
-            .expect("Error handling staged commit.");
+            .context("Error handling staged commit.")?;
         Ok(())
     }
 
-    fn remove_member(&mut self, leaf_node: LeafNodeIndex) -> (Vec<u8>, Option<Vec<u8>>) {
-        let (group_commit, welcome_option, _group_info) = self
+    fn remove_member(&mut self, target: LeafNodeIndex) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+        let (commit, welcome, _group_info) = self
             .group
-            .remove_members(&self.provider, &self.signature_key, &[leaf_node])
-            .expect("Failed to remove member from group");
+            .remove_members(&self.provider, &self.signature_key, &[target])
+            .with_context(|| format!("Failed to remove member at index {:?}", target))?;
 
-        let commit_bytes = group_commit
+        let commit_out = commit
             .tls_serialize_detached()
-            .expect("Failed to serialize group commit");
+            .context("Failed to serialize removal commit")?;
 
-        let welcome_bytes = welcome_option.map(|welcome| {
-            welcome
-                .tls_serialize_detached()
-                .expect("Failed to serialize Welcome message")
-        });
+        // Should not result in a Welcome
+        let welcome_out = match welcome {
+            Some(welcome) => Some(
+                welcome
+                    .tls_serialize_detached()
+                    .context("Failed to serialize removal welcome")?,
+            ),
+            None => None,
+        };
 
         self.group
             .merge_pending_commit(&self.provider)
-            .expect("Failed to merge pending commit");
+            .context("Failed to merge pending removal commit")?;
 
-        self.last_received.remove(&leaf_node);
-        (commit_bytes, welcome_bytes)
+        log::info!(
+            "[MLS] Removed member {:?} from group {:?}",
+            target,
+            self.group.group_id()
+        );
+
+        Ok((commit_out, welcome_out))
     }
 
-    fn update_self(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
-        log::info!("[MlsEngine] UPDATING SELF: current group members present: \n");
-        for mem in self.group().members() {
-            log::info!("{:?}", mem.credential);
-        }
+    fn update_self(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+        let (commit, welcome, _group_info) = self
+            .group
+            .self_update(
+                &self.provider,
+                &self.signature_key,
+                LeafNodeParameters::default(),
+            )
+            .context("Failed to perform self-update")?;
 
-        let pending = self.group.pending_commit();
-        if pending.is_some() {
-            log::error!(
-                "Pending commit exists. Cannot update self. \n Pending commit: {:?}",
-                pending
-            );
-            return Err(Error::msg("Pending commit exists. Cannot update self."));
-        }
-
-        match self.group.self_update(
-            &self.provider,
-            &self.signature_key,
-            LeafNodeParameters::default(),
-        ) {
-            Ok((group_commit, welcome_option, _group_info)) => {
-                let group_commit_out = group_commit
-                    .tls_serialize_detached()
-                    .expect("Error serializing group commit");
-                let welcome_out = welcome_option // Only process welcome if it is Some
-                    .map(|welcome| {
-                        welcome
-                            .tls_serialize_detached()
-                            .expect("Error serializing welcome")
-                    });
-                let _ = self.group.merge_pending_commit(&self.provider);
-                log::info!("Updated self in group with ID: {:?}", self.group.group_id());
-                return Ok((group_commit_out, welcome_out));
-            }
-            Err(e) => {
-                log::error!("Error updating self: {:?}", e);
-                return Err(Error::msg("Error updating self"));
-            }
-        }
-    }
-
-    /// Helper function to retrieve the ratchet tree from the group.
-    /// For obtaining index of nodes.  
-    fn retrieve_ratchet_tree(&self) -> Vec<u8> {
-        self.group
-            .export_ratchet_tree()
+        let commit_out = commit
             .tls_serialize_detached()
-            .expect("Error serializing ratchet tree")
+            .context("Failed to serialize self-update commit")?;
+
+        let welcome_out = match welcome {
+            Some(welcome) => Some(
+                welcome
+                    .tls_serialize_detached()
+                    .context("Failed to serialize welcome (self-update)")?,
+            ),
+            None => None,
+        };
+
+        self.group
+            .merge_pending_commit(&self.provider)
+            .context("Failed to merge self-update commit")?;
+
+        log::info!(
+            "[MLS] Successfully performed self-update for node {:?} in group {:?}",
+            self.config.node_id,
+            self.group.group_id()
+        );
+
+        Ok((commit_out, welcome_out))
     }
 
-    fn add_new_member_from_bytes(&mut self, mut key_package_bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
-        let message_in = MlsMessageIn::tls_deserialize(&mut key_package_bytes)
-            .expect("Error deserializing message");
+    // Only used for testing purposes, when a command is received.
+    fn add_new_member_from_bytes(
+        &mut self,
+        key_package_bytes: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
+        let message_in = MlsMessageIn::tls_deserialize(&mut &*key_package_bytes)
+            .context("Failed to deserialize incoming key package bytes")?;
+
         let key_package_in = match message_in.extract() {
             MlsMessageBodyIn::KeyPackage(kp) => kp,
-            _ => panic!("Expected KeyPackage. Received: Something completely else!"),
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Expected KeyPackage, but received different message type: {:?}",
+                    other
+                ));
+            }
         };
+
         let key_package = key_package_in
             .validate(self.provider.crypto(), ProtocolVersion::Mls10)
-            .expect("Incoming KeyPackage could not be verified");
+            .context("Failed to validate key package")?;
+
         self.add_new_member(key_package)
+    }
+
+    fn add_new_member(&mut self, key_package: KeyPackage) -> Result<(Vec<u8>, Vec<u8>)> {
+        let (group_commit, welcome, _group_info) = self
+            .group
+            .add_members(&self.provider, &self.signature_key, &[key_package.clone()])
+            .context(format!(
+                "Could not add member for KeyPackage with credential: {:?}",
+                key_package.leaf_node().credential()
+            ))?;
+
+        let group_commit_out = group_commit
+            .tls_serialize_detached()
+            .context("Error serializing group commit")?;
+        let welcome_out = welcome
+            .tls_serialize_detached()
+            .context("Error serializing welcome")?;
+
+        self.group.merge_pending_commit(&self.provider)?;
+
+        log::info!(
+            "Added new member {:?} for group: {:?}",
+            key_package.leaf_node().credential(),
+            self.group.group_id()
+        );
+        Ok((group_commit_out, welcome_out))
     }
 
     fn store_key_package(&mut self, key_package: KeyPackage) {
@@ -754,40 +605,37 @@ impl MlsAutomaticRemoval for MlsEngine {
     }
 
     // Removes nodes scheduled for removal. Creates a commit over all removals.
-    fn remove_pending(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
-        // See if we need to remove from anyone we haven't heard of
-
-        let (group_commit, welcome_option, _group_info) = self
+    fn remove_pending(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+        let (commit, welcome, _group_info) = self
             .group
             .remove_members(&self.provider, &self.signature_key, &self.pending_removals)
-            .map_err(|e| anyhow::anyhow!("[MlsAutomaticRemoval] remove_members() failed: {}", e))?;
-        log::debug!(
-            "[MlsAutomaticRemoval] Sucessfully removed {:?}",
-            self.pending_removals
-        );
-        let commit_bytes = group_commit.tls_serialize_detached().map_err(|e| {
-            anyhow::anyhow!("[MlsAutomaticRemoval] Failed to serialize commit: {}", e)
-        })?;
+            .context("Failed to remove pending members")?;
 
-        let welcome_bytes = match welcome_option {
-            Some(welcome) => Some(welcome.tls_serialize_detached().map_err(|e| {
-                anyhow::anyhow!("[MlsAutomaticRemoval] Failed to serialize Welcome: {}", e)
-            })?),
+        let commit_out = commit
+            .tls_serialize_detached()
+            .context("Failed to serialize commit for removal")?;
+
+        let welcome_out = match welcome {
+            Some(welcome) => Some(
+                welcome
+                    .tls_serialize_detached()
+                    .context("Failed to serialize welcome for removal")?,
+            ),
             None => None,
         };
 
         self.group
             .merge_pending_commit(&self.provider)
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "[MlsAutomaticRemoval] Failed to merge pending commit: {}",
-                    e
-                )
-            })?;
+            .context("Failed to merge commit for removal")?;
 
+        log::info!(
+            "[MLS] Removed {} member(s) from group {:?}",
+            self.pending_removals.len(),
+            self.group.group_id()
+        );
         self.pending_removals.clear();
 
-        Ok((commit_bytes, welcome_bytes))
+        Ok((commit_out, welcome_out))
     }
 
     // Corosync provides us with a list of IDs (u32) that have left the corosync group.
@@ -857,7 +705,7 @@ pub trait MlsGroupDiscovery {
     fn mls_group_contains_gcs(&self, group: &MlsGroup) -> bool;
     fn should_join(&self, group_to_join: &MlsGroup) -> bool;
     fn min_node_id(group: &MlsGroup) -> Option<u32>;
-    fn can_add(&self, to_be_added: &Vec<KeyPackage>) -> bool;
+    fn can_add(&self) -> bool;
     fn id_from_key_package(&self, kp: KeyPackage) -> Option<u32>;
 }
 
@@ -884,7 +732,8 @@ impl MlsGroupDiscovery for MlsEngine {
         match self.get_mls_group_state() {
             MlsSwarmState::MainGroup => {
                 log::debug!(
-                    "[MlsEngine] Received Welcome but current group contains GCS. Discarding Welcome."
+                    "[MlsEngine] Received Welcome for group {:?} but current group contains GCS. Discarding Welcome.", 
+                    group_to_join.group_id().as_slice()
                 );
                 return false;
             }
@@ -908,7 +757,8 @@ impl MlsGroupDiscovery for MlsEngine {
                 }
 
                 // Accept only if sender MIN NODE ID < your MIN NODE ID
-                return Self::min_node_id(group_to_join) < Self::min_node_id(self.group());
+                return Self::min_node_id(group_to_join).unwrap_or(u32::MAX)
+                    < Self::min_node_id(self.group()).unwrap_or(u32::MAX);
             }
         }
     }
@@ -919,12 +769,9 @@ impl MlsGroupDiscovery for MlsEngine {
             .filter_map(|member| match member.credential.credential_type() {
                 CredentialType::Basic => BasicCredential::try_from(member.credential.clone())
                     .ok()
-                    .map(|cred| {
-                        u32::from_le_bytes(
-                            cred.identity()[..4]
-                                .try_into()
-                                .expect("Error converting Basic Identity to u32."),
-                        )
+                    .and_then(|cred| {
+                        let bytes: [u8; 4] = cred.identity().get(..4)?.try_into().ok()?;
+                        Some(u32::from_le_bytes(bytes))
                     }),
                 CredentialType::Other(_) => Ed25519credential::try_from(member.credential.clone())
                     .ok()
@@ -934,7 +781,7 @@ impl MlsGroupDiscovery for MlsEngine {
             .min()
     }
 
-    fn can_add(&self, to_be_added: &Vec<KeyPackage>) -> bool {
+    fn can_add(&self) -> bool {
         match self.get_mls_group_state() {
             MlsSwarmState::MainGroup => true,
             MlsSwarmState::Alone | MlsSwarmState::SubGroup => {
@@ -952,7 +799,7 @@ impl MlsGroupDiscovery for MlsEngine {
                     Some(id) => {
                         let lowest_id_in_mls_group = id;
 
-                        if to_be_added.into_iter().any(|kp| {
+                        if self.pending_key_packages.values().any(|kp| {
                             self.id_from_key_package(kp.clone()) < Some(lowest_id_in_mls_group)
                         }) {
                             // If any of the pending key packages have a higher ID than the lowest in our group
@@ -975,12 +822,9 @@ impl MlsGroupDiscovery for MlsEngine {
         match kp.leaf_node().credential().credential_type() {
             CredentialType::Basic => BasicCredential::try_from(kp.leaf_node().credential().clone())
                 .ok()
-                .map(|cred| {
-                    u32::from_le_bytes(
-                        cred.identity()[..4]
-                            .try_into()
-                            .expect("Error converting Basic Identity to u32."),
-                    )
+                .and_then(|cred| {
+                    let bytes: [u8; 4] = cred.identity().get(..4)?.try_into().ok()?;
+                    Some(u32::from_le_bytes(bytes))
                 }),
             CredentialType::Other(_) => {
                 Ed25519credential::try_from(kp.leaf_node().credential().clone())
@@ -1010,13 +854,19 @@ impl MlsGroupReset for MlsEngine {
                     other
                 ),
             };
-        self.group = MlsGroup::new(
+        match MlsGroup::new(
             &self.provider,
             &self.signature_key,
             &generate_group_create_config(capabilities.clone()),
             self.credential_with_key.clone(),
-        )
-        .expect("Error creating group");
+        ) {
+            Ok(group) => {
+                self.group = group;
+            }
+            Err(e) => {
+                log::error!("[MlsEngine] Failed to reset group with new state: {}", e);
+            }
+        }
     }
 
     fn extract_epoch_from_private_message(message: &PrivateMessageIn) -> Option<u64> {
@@ -1170,6 +1020,29 @@ fn capabilities(credential_type: &str) -> Capabilities {
             Some(&[CredentialType::Other(0xF000)]), // Ed25519 credential type
         ),
         _ => panic!("Unsupported credential type: {}", credential_type),
+    }
+}
+
+fn id_from_credential(credential: &Credential) -> Option<u32> {
+    match credential.credential_type() {
+        CredentialType::Basic => {
+            let cred = BasicCredential::try_from(credential.clone()).ok()?;
+            let bytes: [u8; 4] = cred.identity().get(..4)?.try_into().ok()?;
+            Some(u32::from_le_bytes(bytes))
+        }
+
+        CredentialType::Other(_) => {
+            let cred = Ed25519credential::try_from(credential.clone()).ok()?;
+            Some(cred.credential_data.identity)
+        }
+
+        _ => {
+            log::warn!(
+                "[MlsEngine] Unknown credential type: {:?}. Skipping identity extraction.",
+                credential.credential_type()
+            );
+            None
+        }
     }
 }
 

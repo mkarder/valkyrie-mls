@@ -1,6 +1,5 @@
 use crate::mls_group_handler::{
-    MlsAutomaticRemoval, MlsEngineError, MlsGroupDiscovery, MlsGroupReset, MlsSwarmLogic,
-    MlsSwarmState,
+    MlsAutomaticRemoval, MlsGroupDiscovery, MlsGroupReset, MlsSwarmLogic, MlsSwarmState,
 };
 
 use crate::config::RouterConfig;
@@ -8,6 +7,7 @@ use crate::corosync::receive_message;
 use crate::{corosync, mls_group_handler::MlsEngine};
 use anyhow::{Context, Error, Result};
 use once_cell::sync::OnceCell;
+use openmls::group::ProcessMessageError;
 use openmls::prelude::LeafNodeIndex;
 use rust_corosync::cpg::Handle;
 use rust_corosync::NodeId;
@@ -277,14 +277,23 @@ impl Router {
                         Ok(None) => {
                             log::debug!("[ROUTER] No Commit or Welcome generated.");
                         }
-                        Err(MlsEngineError::TrailingEpoch) => {
-                            if self.wrong_epoch_timer.is_none() {
-                                log::warn!("[ROUTER] Detected WrongEpoch. Starting recovery timer.");
-                                self.wrong_epoch_timer = Some(Instant::now());
-                            }
-                        }
                         Err(e) => {
-                            log::error!("[ROUTER] Error processing delivery service message: {}", e);
+                            // We have to check if the error was thrown because of a validation error.
+                            // In that case, we can infer that we are unable to decrypt messages from our own group
+                            // and we need to start the WrongEpoch Timer.
+                            if let Some(ProcessMessageError::ValidationError(_)) =
+                                e.root_cause().downcast_ref::<ProcessMessageError>()
+                            {
+                                if self.wrong_epoch_timer.is_none() {
+                                    log::warn!("Detected WrongEpoch. Starting recovery timer.");
+                                    self.wrong_epoch_timer = Some(Instant::now());
+                                }
+                            } else {
+                                log::error!(
+                                    "[ROUTER] Error processing incoming delivery service message: {:?}",
+                                    e
+                                );
+                            }
                         }
                     }
                 }
@@ -328,12 +337,17 @@ impl Router {
                         Ok(Command::Add { key_package_bytes }) => {
                             log::debug!("[ROUTER] Add command received ({} bytes)", key_package_bytes.len());
 
-                            let (commit, welcome) = self.mls_group_handler
-                                .add_new_member_from_bytes(&key_package_bytes);
-
-                            try_send!(&self.corosync_handle, "Commit", commit.as_slice());
-
-                            try_send!(&self.corosync_handle, "Welcome", welcome.as_slice());
+                            match self.mls_group_handler
+                                .add_new_member_from_bytes(&key_package_bytes) {
+                                Ok((commit, welcome)) => {
+                                    log::info!("[ROUTER] Add: Commit and Welcome generated.");
+                                    try_send!(&self.corosync_handle, "Commit", commit.as_slice());
+                                    try_send!(&self.corosync_handle, "Welcome", welcome.as_slice());
+                                }
+                                Err(e) => {
+                                    log::error!("[ROUTER] Error during Add: {}", e);
+                                }
+                            }
                         }
 
                         Ok(Command::AddPending) => {
@@ -356,12 +370,17 @@ impl Router {
 
                         Ok(Command::Remove { index }) => {
                             log::debug!("[ROUTER] Remove command received (index {}).", index);
-
-                            let (commit, _welcome_option) = self
+                            match self
                                 .mls_group_handler
-                                .remove_member(LeafNodeIndex::new(index));
-
-                            try_send!(&self.corosync_handle, "Commit", commit.as_slice());
+                                .remove_member(LeafNodeIndex::new(index)) {
+                                    Ok((commit, _welcome_option)) => {
+                                        log::info!("[ROUTER] Remove: Commit and Welcome generated.");
+                                        try_send!(&self.corosync_handle, "Commit", commit.as_slice());
+                                    }
+                                    Err(e) => {
+                                        log::error!("[ROUTER] Error during Remove: {}", e);
+                                    }
+                                }
                         }
 
                         Ok(Command::Update) => {
@@ -446,15 +465,24 @@ impl Router {
                         }
                     }
 
-                    Err(MlsEngineError::TrailingEpoch) | Err(MlsEngineError::ValidationError(_)) => {
-                        if self.wrong_epoch_timer.is_none() {
-                            log::warn!("[ROUTER] Detected WrongEpoch. Starting recovery timer.");
-                            self.wrong_epoch_timer = Some(Instant::now());
-                        }
-                    }
-
                     Err(e) => {
-                        log::error!("[ROUTER] Error processing network message from {}: {}", src, e);
+                        // We have to check if the error was thrown because of a validation error.
+                        // In that case, we can infer that we are unable to decrypt messages from our own group
+                        // and we need to start the WrongEpoch Timer.
+                        if let Some(ProcessMessageError::ValidationError(_)) =
+                            e.root_cause().downcast_ref::<ProcessMessageError>()
+                        {
+                            if self.wrong_epoch_timer.is_none() {
+                                log::warn!("Detected WrongEpoch. Starting recovery timer.");
+                                self.wrong_epoch_timer = Some(Instant::now());
+                            }
+                        } else {
+                            log::error!(
+                                "[ROUTER] Error processing network message from {}: {:?}",
+                                src,
+                                e
+                            );
+                        }
                     }
                 }
             }
