@@ -17,7 +17,6 @@ pub enum MlsSwarmState {
     MainGroup,
 }
 
-#[allow(dead_code)]
 pub struct MlsEngine {
     config: MlsConfig,
     group_join_config: MlsGroupJoinConfig,
