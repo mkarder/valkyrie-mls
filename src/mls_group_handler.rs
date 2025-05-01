@@ -2,7 +2,6 @@ use crate::authentication::ed25519::Ed25519SignatureKeyPair;
 use crate::authentication::{self, Ed25519credential};
 use crate::config::MlsConfig;
 use anyhow::{Context, Error};
-use core::error;
 use openmls::group::MlsGroup;
 use openmls::prelude::{group_info::VerifiableGroupInfo, *};
 use openmls_basic_credential::SignatureKeyPair;
@@ -64,7 +63,7 @@ pub trait MlsSwarmLogic {
     fn process_incoming_delivery_service_message(
         &mut self,
         message: &[u8],
-    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error>;
+    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, MlsEngineError>;
     fn process_outgoing_application_message(&mut self, message: &[u8]) -> Result<Vec<u8>, Error>;
 
     fn handle_incoming_welcome(&mut self, welcome: Welcome) -> Result<(), Error>;
@@ -140,7 +139,7 @@ impl MlsEngine {
     }
 
     pub fn get_key_package(&mut self) -> Result<Vec<u8>, Error> {
-        self.refresh_key_package()?;
+        // self.refresh_key_package()?;
         let key_package = MlsMessageOut::from(self.key_package.key_package().clone());
         key_package
             .tls_serialize_detached()
@@ -199,7 +198,7 @@ impl MlsSwarmLogic for MlsEngine {
                         let preview = std::str::from_utf8(&content_bytes)
                             .map(|text| &text[..text.len().min(50)])
                             .unwrap_or("<non-UTF8 data>");
-                        log::info!("[MlsEngine] Decrypted application message: {}", preview);
+                        log::debug!("[MlsEngine] Decrypted application message: {}", preview);
                         Ok(content_bytes)
                     }
                     _ => Err(MlsEngineError::ProposalOverApplicationChannel),
@@ -246,7 +245,7 @@ impl MlsSwarmLogic for MlsEngine {
                                 }
                             }
 
-                            _ => Err(MlsEngineError::ValidationError),
+                            _ => Err(MlsEngineError::ValidationError(val_error)),
                         },
                         _ => Err(MlsEngineError::from(e)),
                     },
@@ -276,7 +275,7 @@ impl MlsSwarmLogic for MlsEngine {
     fn process_incoming_delivery_service_message(
         &mut self,
         mut buf: &[u8],
-    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
+    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, MlsEngineError> {
         log::debug!(
             "Processing incoming delivery service message. \n Group epoch before processing: {:?}",
             self.group.epoch()
@@ -285,7 +284,7 @@ impl MlsSwarmLogic for MlsEngine {
         let message_in =
             MlsMessageIn::tls_deserialize(&mut buf).expect("Error deserializing message");
 
-        match message_in.extract() {
+        match message_in.clone().extract() {
             MlsMessageBodyIn::PublicMessage(msg) => {
                 let processed_message = self
                     .group
@@ -297,7 +296,7 @@ impl MlsSwarmLogic for MlsEngine {
                     Ok(_) => {}
                     Err(e) => {
                         log::error!("Error verifying sender's credential: {:?}", e);
-                        return Err(e);
+                        return Err(MlsEngineError::CredentialVerificationError);
                     }
                 }
 
@@ -323,61 +322,86 @@ impl MlsSwarmLogic for MlsEngine {
                             .context("Error storing proposal.");
                     }
                     ProcessedMessageContent::ExternalJoinProposalMessage(_) => {
-                        return Err(Error::msg("No support for External Joins."))
+                        return Err(MlsEngineError::NotSupported)
                     }
                     ProcessedMessageContent::ApplicationMessage(_) => {
-                        return Err(Error::msg(
-                            "Expected Handshake Message from DS. Received ApplicationMessage.",
-                        ))
+                        return Err(MlsEngineError::ApplicationMessageOverPublicChannel)
                     }
                 }
                 Ok(None)
             }
 
             MlsMessageBodyIn::PrivateMessage(msg) => {
-                let processed_message = self.group.process_message(&self.provider, msg)?;
-                // Validate sender's Credential
-                match self.verify_credential(processed_message.credential().clone(), None) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        log::error!("Error verifying sender's credential: {:?}", e);
-                        return Err(e);
-                    }
-                }
-
-                if let Sender::Member(leaf_index) = processed_message.sender() {
-                    self.last_received.insert(*leaf_index, SystemTime::now());
-                }
-
-                match processed_message.into_content() {
-                    ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
-                        match self.handle_incoming_commit(*staged_commit) {
+                match self.group.process_message(&self.provider, msg) {
+                    Ok(processed_message) => {
+                        // Validate sender's Credential
+                        match self.verify_credential(processed_message.credential().clone(), None) {
                             Ok(_) => {}
                             Err(e) => {
-                                log::error!("Error handling incoming commit: {:?}", e);
+                                log::error!("Error verifying sender's credential: {:?}", e);
+                                return Err(MlsEngineError::CredentialVerificationError);
                             }
                         }
+
+                        if let Sender::Member(leaf_index) = processed_message.sender() {
+                            self.last_received.insert(*leaf_index, SystemTime::now());
+                        }
+
+                        match processed_message.into_content() {
+                            ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
+                                match self.handle_incoming_commit(*staged_commit) {
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        log::error!("Error handling incoming commit: {:?}", e);
+                                    }
+                                }
+                            }
+                            ProcessedMessageContent::ProposalMessage(proposal) => {
+                                let _ = self
+                                    .group
+                                    .store_pending_proposal(
+                                        self.provider.storage(),
+                                        *proposal.clone(),
+                                    )
+                                    .context("Error storing proposal.");
+                            }
+                            ProcessedMessageContent::ExternalJoinProposalMessage(_) => {
+                                return Err(MlsEngineError::NotSupported);
+                            }
+                            ProcessedMessageContent::ApplicationMessage(_) => {
+                                return Err(MlsEngineError::NotSupported);
+                            }
+                        }
+                        Ok(None)
                     }
-                    ProcessedMessageContent::ProposalMessage(proposal) => {
-                        let _ = self
-                            .group
-                            .store_pending_proposal(self.provider.storage(), *proposal.clone())
-                            .context("Error storing proposal.");
-                    }
-                    ProcessedMessageContent::ExternalJoinProposalMessage(_) => {
-                        return Err(Error::msg("No support for External Joins."))
-                    }
-                    ProcessedMessageContent::ApplicationMessage(_) => {
-                        return Err(Error::msg(
-                            "Expected Handshake Message from DS. Received ApplicationMessage.",
-                        ))
-                    }
+                    Err(e) => match e {
+                        ProcessMessageError::ValidationError(val_error) => match val_error {
+                            ValidationError::WrongEpoch => {
+                                if self.group.epoch().as_u64()
+                                    < message_in
+                                        .try_into_protocol_message()
+                                        .unwrap()
+                                        .epoch()
+                                        .as_u64()
+                                {
+                                    log::error!("### Trailing error ### ");
+                                    return Err(MlsEngineError::TrailingEpoch);
+                                } else {
+                                    return Err(MlsEngineError::FutureEpoch);
+                                }
+                            }
+
+                            _ => {
+                                return Err(MlsEngineError::ValidationError(val_error));
+                            }
+                        },
+                        _ => Err(MlsEngineError::from(e)),
+                    },
                 }
-                Ok(None)
             }
             MlsMessageBodyIn::Welcome(welcome) => match self.handle_incoming_welcome(welcome) {
                 Ok(_) => Ok(None),
-                Err(e) => Err(e),
+                Err(e) => Err(MlsEngineError::GeneralError(e)),
             },
             MlsMessageBodyIn::GroupInfo(group_info) => {
                 self.handle_incoming_group_info(group_info);
@@ -435,7 +459,7 @@ impl MlsSwarmLogic for MlsEngine {
             );
             self.last_received.clear(); // Flush old, as we join a new roup.
             self.last_received.insert(sender_index, SystemTime::now());
-            // self.refresh_key_package()?;
+            self.refresh_key_package()?;
 
             return Ok(());
         }
@@ -458,17 +482,17 @@ impl MlsSwarmLogic for MlsEngine {
         }
 
         // Verify credential and store key package
-        log::info!("Received KeyPackage message. Verifying and  storing it.");
+        log::info!("KEYPACKAGE Received KeyPackage message. Verifying and  storing it.");
         match self.verify_credential(
             key_package_in.unverified_credential().credential,
             Some(&key_package_in.unverified_credential().signature_key),
         ) {
             Ok(_) => {
-                log::info!("Credential verified successfully.");
                 let key_package = key_package_in
                     .validate(self.provider.crypto(), ProtocolVersion::Mls10)
                     .expect("Error validating KeyPackage");
                 self.store_key_package(key_package.clone());
+                log::debug!("Credential verified and validated successfully.");
             }
             Err(e) => log::error!("Error verifying credential: {:?}", e),
         }
@@ -547,7 +571,7 @@ impl MlsSwarmLogic for MlsEngine {
                 log::info!("Removed pending KeyPackage: {:?}", removed);
             }
         }
-
+        /*
         for unverified_credential in commit.credentials_to_verify() {
             match self.verify_credential(unverified_credential.clone(), None) {
                 Ok(_) => {}
@@ -557,6 +581,7 @@ impl MlsSwarmLogic for MlsEngine {
                 }
             }
         }
+         */
 
         // Handle REMOVE operations: remove LeafNodeIndex in pending_removals list (array)
         for remove in commit.remove_proposals() {
@@ -596,6 +621,11 @@ impl MlsSwarmLogic for MlsEngine {
     }
 
     fn update_self(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
+        log::info!("[MlsEngine] UPDATING SELF: current group members present: \n");
+        for mem in self.group().members() {
+            log::info!("{:?}", mem.credential);
+        }
+
         let pending = self.group.pending_commit();
         if pending.is_some() {
             log::error!(
@@ -666,7 +696,6 @@ impl MlsSwarmLogic for MlsEngine {
         unverified_credential: Credential,
         attached_key: Option<&SignaturePublicKey>,
     ) -> Result<(), Error> {
-        log::info!("[MlsEngine] Verifying incoming Credential!");
         match unverified_credential.credential_type() {
             CredentialType::Basic => {
                 log::debug!("[MlsEngine] Received Basic credential. Continuing...");
@@ -970,6 +999,7 @@ pub trait MlsGroupReset {
 
 impl MlsGroupReset for MlsEngine {
     fn reset_group(&mut self) {
+        log::debug!("[MlsEngine] Reseting MLS group.");
         let (_credential_type, capabilities) =
             match self.config.credential_type.to_lowercase().as_str() {
                 "basic" => (CredentialType::Basic, capabilities("basic")),
@@ -1093,10 +1123,9 @@ fn generate_key_package(
 
 fn generate_group_config() -> MlsGroupJoinConfig {
     MlsGroupJoinConfig::builder()
-        .max_past_epochs(1)  //Increase max past epochs stored 
+        .max_past_epochs(1) //Increase max past epochs stored
         .padding_size(0)
         .sender_ratchet_configuration(SenderRatchetConfiguration::new(
-
             5,    // out_of_order_tolerance
             1000, // maximum_forward_distance
         ))
@@ -1106,10 +1135,9 @@ fn generate_group_config() -> MlsGroupJoinConfig {
 
 fn generate_group_create_config(capabilities: Capabilities) -> MlsGroupCreateConfig {
     MlsGroupCreateConfig::builder()
-        .max_past_epochs(1)  //Increase max past epochs stored 
+        .max_past_epochs(1) //Increase max past epochs stored
         .padding_size(0)
         .sender_ratchet_configuration(SenderRatchetConfiguration::new(
-
             5,    // out_of_order_tolerance
             1000, // maximum_forward_distance
         ))
@@ -1154,12 +1182,16 @@ pub enum MlsEngineError {
     GroupInfoOverApplicationChannel,
     KeyPackageOverApplicationChannel,
     UnauthorizedExternalApplicationMessage,
-    ValidationError,
+    ValidationError(ValidationError),
     WrongGroupId,
     FutureEpoch,
     UnknownMember,
     ProcessMessageError,
     TrailingEpoch,
+    CredentialVerificationError,
+    NotSupported,
+    ApplicationMessageOverPublicChannel,
+    GeneralError(Error),
 }
 
 impl From<ProcessMessageError> for MlsEngineError {
@@ -1173,7 +1205,8 @@ impl From<ProcessMessageError> for MlsEngineError {
                 ValidationError::WrongGroupId => Self::WrongGroupId,
                 ValidationError::WrongEpoch => Self::FutureEpoch,
                 ValidationError::UnknownMember => Self::UnknownMember,
-                _ => Self::ValidationError,
+                ValidationError::UnableToDecrypt(_) => Self::TrailingEpoch,
+                _ => Self::ValidationError(e),
             },
             _ => Self::ProcessMessageError,
         }
@@ -1184,40 +1217,44 @@ impl fmt::Display for MlsEngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let description = match self {
             MlsEngineError::TlsSerializationError => {
-                        "Error serializing or deserializing using tls_codec."
-                    }
+                                        "Error serializing or deserializing using tls_codec."
+                                    }
             MlsEngineError::ProposalOverApplicationChannel => {
-                        "Proposals are not allowed to be sent over the application channel."
-                    }
+                                        "Proposals are not allowed to be sent over the application channel."
+                                    }
             MlsEngineError::CommitOverApplicationChannel => {
-                        "Commits are not allowed to be sent over the application channel."
-                    }
+                                        "Commits are not allowed to be sent over the application channel."
+                                    }
             MlsEngineError::WelcomeOverApplicationChannel => {
-                        "Welcome messages are not allowed to be sent over the application channel."
-                    }
+                                        "Welcome messages are not allowed to be sent over the application channel."
+                                    }
             MlsEngineError::GroupInfoOverApplicationChannel => {
-                        "GroupInfo messages are not allowed to be sent over the application channel."
-                    }
+                                        "GroupInfo messages are not allowed to be sent over the application channel."
+                                    }
             MlsEngineError::KeyPackageOverApplicationChannel => {
-                        "KeyPackage messages are not allowed to be sent over the application channel."
-                    }
+                                        "KeyPackage messages are not allowed to be sent over the application channel."
+                                    }
             MlsEngineError::UnauthorizedExternalApplicationMessage => {
-                        "External application messages are not permitted without proper authorization."
-                    }
-            MlsEngineError::ValidationError => {
-                        "Validation of the incoming message or content failed."
-                    }
+                                        "External application messages are not permitted without proper authorization."
+                                    }
+            MlsEngineError::ValidationError(e) => {
+                                        &e.to_string()
+                                    }
             MlsEngineError::WrongGroupId => "The message was intended for a different group ID.",
             MlsEngineError::FutureEpoch => {
-                        "The message was created for a different, future epoch than the current group epoch."
-                    }
+                                        "The message was created for a different, future epoch than the current group epoch."
+                                    }
             MlsEngineError::UnknownMember => {
-                        "The message originated from an unknown member not recognized in the current group."
-                    }
+                                        "The message originated from an unknown member not recognized in the current group."
+                                    }
             MlsEngineError::ProcessMessageError => {
-                        "An unexpected error occurred while processing the MLS message."
-                    }
+                                        "An unexpected error occurred while processing the MLS message."
+                                    }
             MlsEngineError::TrailingEpoch => {"The message was created for a different, trailing epoch than the current group epoch."},
+            MlsEngineError::CredentialVerificationError => {"Error verifying the credential."},
+            MlsEngineError::NotSupported => "Functionality is currently not supported.",
+            MlsEngineError::ApplicationMessageOverPublicChannel => "Cannot send application messages ov DS.",
+            MlsEngineError::GeneralError(error) => &error.to_string(),
         };
         write!(f, "{}", description)
     }

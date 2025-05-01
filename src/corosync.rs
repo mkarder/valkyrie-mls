@@ -1,7 +1,13 @@
+use std::thread;
+use std::time::Duration;
+
 use crate::router::{CorosyncSignal, MLS_HANDSHAKE_CHANNEL, SIG_CHANNEL};
 use rust_corosync::cpg;
 use rust_corosync::cpg::{Address, Guarantee, Handle, Model1Data, Model1Flags, ModelData};
+use rust_corosync::CsError;
 use rust_corosync::NodeId;
+
+const GROUP: &str = "my_test_group";
 
 /// Callback function for received multicast messages from Corosync
 pub fn deliver_callback(
@@ -56,8 +62,12 @@ pub fn confchg_callback(
     left_list: Vec<Address>,
     joined_list: Vec<Address>,
 ) {
-    log::info!("[Corosync] Nodes joined: {:?}", joined_list);
-    log::info!("[Corosync] Nodes removed: {:?}", left_list);
+    if !joined_list.is_empty() {
+        log::debug!("[Corosync] Nodes joined: {:?}", joined_list);
+    }
+    if !left_list.is_empty() {
+        log::debug!("[Corosync] Nodes removed: {:?}", left_list);
+    }
 
     if let Some(sig_tx) = SIG_CHANNEL.get() {
         // Who left
@@ -92,7 +102,7 @@ pub fn initialize() -> cpg::Handle {
     // Initialize CPG
     let handle = cpg::initialize(&ModelData::ModelV1(model1), 0).expect("Failed to initialize CPG");
 
-    join_group(&handle, "my_test_group").expect("[Corosync] Failed to join group");
+    join_group(&handle, GROUP).expect("[Corosync] Failed to join group");
 
     if let Some(sig_tx) = SIG_CHANNEL.get() {
         match cpg::membership_get(handle, "my_test_group") {
@@ -117,10 +127,11 @@ pub fn initialize() -> cpg::Handle {
 /// Joins a Corosync CPG group
 pub fn join_group(handle: &Handle, group_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     cpg::join(*handle, group_name)?;
-    log::info!("[Corosync] Joined group \"{}\".", group_name);
+    log::debug!("[Corosync] Joined group \"{}\".", group_name);
     Ok(())
 }
 
+/*
 /// Sends a multicast message to the currently joined group
 pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = cpg::mcast_joined(*handle, Guarantee::TypeAgreed, message) {
@@ -134,6 +145,50 @@ pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::
     Ok(())
 }
 
+ */
+
+pub fn send_message(handle: &Handle, message: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    const MAX_RETRIES: usize = 5;
+    const RETRY_DELAY_MS: u64 = 10;
+
+    for attempt in 0..=MAX_RETRIES {
+        match cpg::mcast_joined(*handle, Guarantee::TypeAgreed, message) {
+            Ok(_) => {
+                log::debug!(
+                    "[Corosync] Sent message to group; msg_len={}",
+                    message.len()
+                );
+                return Ok(());
+            }
+            Err(e) => match e {
+                CsError::CsErrTryAgain => {
+                    if attempt == MAX_RETRIES {
+                        eprintln!(
+                            "Failed to send message after {} retries: Buffer still full",
+                            MAX_RETRIES
+                        );
+                        return Ok(());
+                    } else {
+                        log::warn!(
+                                "[Corosync] Send buffer full (CsErrTryAgain), retrying... (attempt {}/{})",
+                                attempt + 1,
+                                MAX_RETRIES
+                            );
+                        std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
+                    }
+                }
+                _ => {
+                    eprintln!("Failed to send message: {}", e);
+                    return Ok(());
+                }
+            },
+        }
+    }
+
+    // This ensures that the function always returns a Result even if loop ends (very unlikely)
+    Ok(())
+}
+
 /// Blocking receive loop for Corosync messages (runs in a separate thread)
 pub fn receive_message(handle: &Handle) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = cpg::dispatch(*handle, rust_corosync::DispatchFlags::Blocking) {
@@ -141,5 +196,21 @@ pub fn receive_message(handle: &Handle) -> Result<(), Box<dyn std::error::Error>
         return Err(Box::new(e));
     }
 
+    Ok(())
+}
+
+pub fn hard_reset_group(
+    handle: &Handle,
+    delay_seconds: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    cpg::leave(*handle, GROUP)?;
+    //cpg::finalize(*handle)?;
+
+    // Wait for a delay
+    thread::sleep(Duration::from_secs(delay_seconds as u64));
+
+    //let handle = initialize();
+    cpg::join(*handle, GROUP)?;
+    log::info!("[Corosync] Re-joined group \"{}\" after reset.", GROUP);
     Ok(())
 }
