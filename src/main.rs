@@ -23,7 +23,7 @@ async fn main() -> Result<()> {
         log::info!("[MAIN] Starting MLS Valkyrie...");
 
         // Use $USER environment variable to build the config path
-        let username = env::var("USER").expect("USER environment variable not set");
+        let username = env::var("HOME").expect("USER environment variable not set");
         let config_path = PathBuf::from(format!("/{}/valkyrie-mls/config.toml", username));
         log::info!("Using config path: {}", config_path.display());
 
