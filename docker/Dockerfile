@@ -36,7 +36,6 @@ COPY ../Cargo.toml .
 COPY ../src ./src
 
 RUN cargo build --release
-RUN cargo build --bin issue_ed25519_credential --release
 
 
 # ---------------------------------------------------------
@@ -59,7 +58,6 @@ ENV RUST_LOG=debug
 
 # Install only the packages needed at runtime
 RUN apt-get update && apt-get install -y \
-    openssl \
     iputils-ping \
     iproute2 \
     iperf \
@@ -98,8 +96,6 @@ RUN chmod +x /home/valkyrie-mls/entrypoint.sh
 # Copy the compiled Rust binary from the builder stage
 # (Adjust the path and binary name if your actual target differs)
 COPY --from=builder /app/target/release/valkyrie-mls /home/valkyrie-mls/valkyrie-mls
-COPY --from=builder /app/target/release/issue_ed25519_credential /home/valkyrie-mls/issue_ed25519_credential
-
 
 # Set the entrypoint to the script
 ENTRYPOINT ["/home/valkyrie-mls/entrypoint.sh"]
