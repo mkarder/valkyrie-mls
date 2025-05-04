@@ -35,7 +35,9 @@ WORKDIR /app
 COPY ../Cargo.toml .
 COPY ../src ./src
 
-RUN cargo build
+RUN cargo build --release
+RUN cargo build --bin issue_ed25519_credential --release
+
 
 # ---------------------------------------------------------
 # Stage 2: Final runtime environment
