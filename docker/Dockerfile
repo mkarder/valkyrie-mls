@@ -46,7 +46,7 @@ FROM ubuntu:20.04
 
 # Set environment variables for non-interactive installations
 ENV DEBIAN_FRONTEND=noninteractive
-ENV HOME=/root
+ENV HOME=/home
 
 
 ARG NODE_NAME
@@ -59,6 +59,7 @@ ENV RUST_LOG=debug
 
 # Install only the packages needed at runtime
 RUN apt-get update && apt-get install -y \
+    openssl \
     iputils-ping \
     iproute2 \
     iperf \
@@ -73,10 +74,16 @@ RUN apt-get update && apt-get install -y \
 COPY ./corosync.conf /etc/corosync/corosync.conf.template
 
 # Copy config files 
-COPY ./config.toml /root/valkyrie-mls/config.toml
+COPY ./config.toml /home/valkyrie-mls/config.toml
 
 # Copy the MGEN config file
-COPY ../test-results/test.mgn /root/valkyrie-mls/test.mgn
+COPY ../test-results/test.mgn /home/valkyrie-mls/test.mgn
+
+#Copy credentials and key material
+COPY ../authentication/keys/${NODE_ID}.pub /home/valkyrie-mls/authentication/keys/${NODE_ID}.pub
+COPY ../authentication/keys/${NODE_ID}.priv /home/valkyrie-mls/authentication/keys/${NODE_ID}.priv
+COPY ../authentication/credentials/${NODE_ID}.cred /home/valkyrie-mls/authentication/credentials/${NODE_ID}.cred
+
 
 # Replace placeholders in the Corosync config
 RUN sed "s/{{NODE_IP}}/$NODE_IP/" /etc/corosync/corosync.conf.template > /etc/corosync/corosync.conf
@@ -85,15 +92,17 @@ RUN sed "s/{{NODE_IP}}/$NODE_IP/" /etc/corosync/corosync.conf.template > /etc/co
 EXPOSE 5404/udp 5405/udp
 
 # Copy the entrypoint script
-COPY docker/entrypoint.sh /root/valkyrie-mls/entrypoint.sh
-RUN chmod +x /root/valkyrie-mls/entrypoint.sh
+COPY docker/entrypoint.sh /home/valkyrie-mls/entrypoint.sh
+RUN chmod +x /home/valkyrie-mls/entrypoint.sh
 
 # Copy the compiled Rust binary from the builder stage
 # (Adjust the path and binary name if your actual target differs)
-COPY --from=builder /app/target/debug/valkyrie-mls /root/valkyrie-mls/valkyrie-mls
+COPY --from=builder /app/target/release/valkyrie-mls /home/valkyrie-mls/valkyrie-mls
+COPY --from=builder /app/target/release/issue_ed25519_credential /home/valkyrie-mls/issue_ed25519_credential
+
 
 # Set the entrypoint to the script
-ENTRYPOINT ["/root/valkyrie-mls/entrypoint.sh"]
+ENTRYPOINT ["/home/valkyrie-mls/entrypoint.sh"]
 
 # Default command if no arguments are provided
 CMD ["bash"]
