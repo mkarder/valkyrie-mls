@@ -21,22 +21,15 @@ async fn main() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         log::info!("[MAIN] Starting MLS Valkyrie...");
-        let _config_path = format!("{}/valkyrie-mls/config.toml", env::var("HOME").unwrap());
-        let _config = Config::from_file(_config_path.as_str()).unwrap();
 
-        // Determine correct home directory
-        let user_home = match env::var("SUDO_USER") {
-            Ok(user) => PathBuf::from(format!("/home/{}", user)),
-            Err(_) => home::home_dir().expect("Cannot determine home directory"),
-        };
-
-        // Construct full config path
-        let config_path = user_home.join("valkyrie-mls").join("config.toml");
-
+        // Use $USER environment variable to build the config path
+        let username = env::var("HOME").expect("USER environment variable not set");
+        let config_path = PathBuf::from(format!("/{}/valkyrie-mls/config.toml", username));
         log::info!("Using config path: {}", config_path.display());
 
-        // Read config
-        let config = Config::from_file(config_path.to_str().unwrap()).unwrap();
+        // Load config
+        let config = Config::from_file(config_path.to_str().unwrap())
+            .expect("Failed to read config file");
 
         // Start MLS system
         let mls_engine = MlsEngine::new(config.mls.clone());

@@ -122,10 +122,10 @@ The Corosync process need to be run
 1. **Build** as a normal user:
 
    ```bash
-   cargo build
+   cargo build --release
    ```
 
 2. **Run** the compiled binary with sudo (or appropriate capabilities/permissions):
    ```bash
-   sudo RUST_LOG=debug ./target/debug/valkyrie-mls
+   sudo RUST_LOG=info HOME=/home NODE_ID=x NODE_IP=10.10.0.x ./target/release/valkyrie-mls
    ```

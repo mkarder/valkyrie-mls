@@ -12,7 +12,7 @@ pub struct Cli {
     command: MlsCliCommand,
 }
 
-const IP_PREFIX: &str = "192.168.12";
+const IP_PREFIX: &str = "10.10.0";
 
 
 #[derive(Subcommand)]
