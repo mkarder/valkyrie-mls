@@ -7,7 +7,7 @@ echo "127.0.0.1 localhost" > /etc/hosts
 echo "$NODE_IP $NODE_NAME" >> /etc/hosts
 
 echo "Starting Corosync..."
-corosync -f &  # Start in background (-f = foreground, but we push it to background here)
+sudo corosync  # Start in background (-f = foreground, but we push it to background here)
 
 cd /home/valkyrie-mls
 
