@@ -199,7 +199,7 @@ pub fn receive_message(handle: &Handle) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-pub fn hard_reset_group(
+pub fn _hard_reset_group(
     handle: &Handle,
     delay_seconds: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {

@@ -1,4 +1,5 @@
 // src/config.rs
+use anyhow::Result;
 use serde::Deserialize;
 use std::{fs, path::Path};
 use ::config::{Config as RawConfig, Environment, File};

@@ -1,18 +1,21 @@
+use anyhow::{Context, Result};
+use std::env;
+use std::path::PathBuf;
+
 pub mod authentication;
 mod config;
 pub mod mls_group_handler;
-use anyhow::Result;
 
 #[cfg(target_os = "linux")]
 mod corosync;
 #[cfg(target_os = "linux")]
 mod router;
+
 use config::Config;
 use mls_group_handler::MlsEngine;
+
 #[cfg(target_os = "linux")]
 use router::Router;
-use std::env;
-use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -34,14 +37,16 @@ async fn main() -> Result<()> {
         // Start MLS system
         let mls_engine = MlsEngine::new(config.mls.clone());
         let mut router = Router::new(mls_engine, config.router.clone());
-        router.run_main_loop().await?;
+
+        // Run main loop
+        router.run_main_loop().await.context("Router loop failed")?;
 
         log::info!("[MAIN] Stopping MLS Valkyrie...");
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        log::info!("[MAIN] ⚠️Running in non-linux environment. Exiting. ⚠️");
+        log::warn!("[MAIN] ⚠️ Running in non-Linux environment. Exiting. ⚠️");
     }
 
     Ok(())
