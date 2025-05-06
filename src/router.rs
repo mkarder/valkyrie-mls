@@ -25,6 +25,18 @@ use tokio::{select, signal};
 
 const MLS_MSG_BUFFER_SIZE: usize = 16384; // 16KB
 
+use tokio::sync::Mutex;
+use std::sync::Arc;
+use tokio::time::interval;
+use std::fs::OpenOptions;
+use std::io::Write;
+
+#[derive(Default)]
+struct DecryptionStats {
+    success: u64,
+    failure: u64,
+}
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MlsOperation {
@@ -259,6 +271,10 @@ impl Router {
             self.mls_group_handler.update_interval_secs(),
         ));
 
+        let stats = Arc::new(Mutex::new(DecryptionStats::default()));
+        tokio::spawn(log_decryption_stats(stats.clone()));
+
+
         loop {
             select! {
                 biased;
@@ -446,9 +462,9 @@ impl Router {
                 Ok((size, src, buf)) as Result<(usize, SocketAddr, [u8; MLS_MSG_BUFFER_SIZE]), anyhow::Error>
             } => {
                 log::debug!("[ROUTER] Network → MLS: Received {} bytes from {}", size, src);
-
                 match self.mls_group_handler.process_incoming_network_message(&buf[..size]) {
                     Ok(data) => {
+                        stats.lock().await.success += 1;
                         self.wrong_epoch_timer = None;
 
                         if let Err(e) = tx_app_socket
@@ -462,10 +478,12 @@ impl Router {
                             })
                         {
                             log::error!("[ROUTER] Error forwarding packet to application: {:?}", e);
+
                         }
                     }
 
                     Err(e) => {
+                        stats.lock().await.failure += 1;
                         // We have to check if the error was thrown because of a validation error.
                         // In that case, we can infer that we are unable to decrypt messages from our own group
                         // and we need to start the WrongEpoch Timer.
@@ -483,8 +501,9 @@ impl Router {
                                 e
                             );
                         }
+
                     }
-                }
+                }                
             }
 
             // Unencrypted AppData coming in from application, being sent to MLS_group_handler for encryption, then forwarded to radio network.
@@ -663,5 +682,39 @@ impl Router {
         }
         log::info!("Router main loop exited.");
         Ok(())
+    }
+}
+
+
+async fn log_decryption_stats(stats: Arc<Mutex<DecryptionStats>>) {
+    let mut ticker = interval(Duration::from_secs(10));
+    let mut file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open("decryption_stats.log")
+        .expect("Failed to open stats log file");
+
+    let start = Instant::now();
+
+    loop {
+        ticker.tick().await;
+
+        let mut stats_guard = stats.lock().await;
+        let success = stats_guard.success;
+        let failure = stats_guard.failure;
+
+        let elapsed_secs = start.elapsed().as_secs();
+        let minutes = elapsed_secs / 60;
+        let seconds = elapsed_secs % 60;
+
+        writeln!(
+            file,
+            "{:02}:{:02}, success: {}, failure: {}",
+            minutes, seconds, success, failure
+        ).unwrap();
+        file.flush().unwrap();
+
+        stats_guard.success = 0;
+        stats_guard.failure = 0;
     }
 }

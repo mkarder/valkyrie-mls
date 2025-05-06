@@ -111,6 +111,7 @@ impl Ed25519credential {
     pub fn from_file(identity: u32) -> Result<Self, CredentialError> {
         let path = credential_file_path(identity);
         if !path.exists() {
+            log::error!("Credential file not found at path: {}", path.display());
             return Err(CredentialError::FileReadError);
         }
         let bytes = fs::read(path).map_err(|_| CredentialError::FileReadError)?;

@@ -25,21 +25,16 @@ async fn main() -> Result<()> {
     {
         log::info!("[MAIN] Starting MLS Valkyrie...");
 
-        // Try to get the user home directory in a fallible way
-        let user_home = match env::var("SUDO_USER") {
-            Ok(user) => PathBuf::from(format!("/home/{}", user)),
-            Err(_) => home::home_dir().context("Could not determine user home directory")?,
-        };
+        // Use $USER environment variable to build the config path
+        let username = env::var("HOME").expect("USER environment variable not set");
+        let config_path = PathBuf::from(format!("/{}/valkyrie-mls/config.toml", username));
+        log::info!("Using config path: {}", config_path.display());
 
-        // Build the full config path
-        let config_path = user_home.join("valkyrie-mls").join("config.toml");
-        log::info!("[MAIN] Using config path: {}", config_path.display());
-
-        // Load config with context in case of error
+        // Load config
         let config = Config::from_file(config_path.to_str().unwrap())
-            .context("Failed to load config file")?;
+            .expect("Failed to read config file");
 
-        // Initialize core components
+        // Start MLS system
         let mls_engine = MlsEngine::new(config.mls.clone());
         let mut router = Router::new(mls_engine, config.router.clone());
 

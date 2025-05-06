@@ -1,7 +1,9 @@
 // src/config.rs
 use anyhow::Result;
 use serde::Deserialize;
-use std::fs;
+use std::{fs, path::Path};
+use ::config::{Config as RawConfig, Environment, File};
+
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
@@ -27,9 +29,34 @@ pub struct MlsConfig {
 }
 
 impl Config {
-    pub fn from_file(path: &str) -> Result<Self> {
-        let contents = fs::read_to_string(path)?;
-        let config: Config = toml::from_str(&contents)?;
-        Ok(config)
+    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut builder = RawConfig::builder()
+            .add_source(File::from(Path::new(path)))
+            .add_source(Environment::default());
+    
+        // Manually map flat env vars to nested fields
+        if let Ok(val) = std::env::var("NODE_ID") {
+            builder = builder.set_override("mls.node_id", val)?;
+        }
+        if let Ok(val) = std::env::var("GCS_ID") {
+            builder = builder.set_override("mls.gcs_id", val)?;
+        }
+        if let Ok(val) = std::env::var("CREDENTIAL_TYPE") {
+            builder = builder.set_override("mls.credential_type", val)?;
+        }
+        if let Ok(val) = std::env::var("UPDATE_INTERVAL_SECS") {
+            builder = builder.set_override("mls.update_interval_secs", val)?;
+        }
+    
+        // Add other mappings as needed...
+        // For router section:
+        if let Ok(val) = std::env::var("RX_CMD_SOCK_ADDR") {
+            builder = builder.set_override("router.rx_cmd_sock_addr", val)?;
+        }
+    
+        let config = builder.build()?;
+        let typed: Config = config.try_deserialize()?;
+        Ok(typed)
     }
+    
 }
