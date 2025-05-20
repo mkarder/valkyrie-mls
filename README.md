@@ -1,4 +1,4 @@
-# valkyrie-mls
+# Valkyrie-MLS
 Implementation of OpenMLS for FFI's Valkyrie Swarm System.
 
 
@@ -8,11 +8,13 @@ The lab is setup using one host machine (running Ubuntu:latest), connected to th
 ### Directory overview
 | Folder         | Description |
 |---------------|------------------------------------------------------------|
-| valkyrie-mls  | Root directory containing all project-related components. |
-| ├─ corosync   | Official Corosync repository cloned from GitHub, used for group communication and cluster messaging. |
-| ├─ corosync-app | Our custom implementation built on top of Corosync, providing a message delivery service. |
-| ├─ docker     | Configuration and scripts for setting up a Docker-based network, simulating the distributed environment for testing. |
-| └─ openmls    | OpenMLS repository cloned from GitHub, used for implementing and testing Messaging Layer Security (MLS) in our system. |
+| valkyrie-mls  | Root directory containing all components of the Valkyrie-MLS project |
+| ├─ authentication   | Source code for the Authentication Server (AS) |
+| ├─ docker     | Docker configurations and scripts for simulating a distributed network environment |
+| └─ scripts    | Scripts for generating public/private key pairs and other setup tasks  |
+| └─ src    | Source code for the Valkyrie-MLS system |
+| └─ test-results    | Output from network testing  |
+| └─ tests    | Unit and integration tests written using Rust's built-in test framework (cargo test) |
 
 
 
