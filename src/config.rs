@@ -1,9 +1,8 @@
 // src/config.rs
+use ::config::{Config as RawConfig, Environment, File};
 use anyhow::Result;
 use serde::Deserialize;
-use std::{fs, path::Path};
-use ::config::{Config as RawConfig, Environment, File};
-
+use std::path::Path;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
@@ -33,7 +32,7 @@ impl Config {
         let mut builder = RawConfig::builder()
             .add_source(File::from(Path::new(path)))
             .add_source(Environment::default());
-    
+
         // Manually map flat env vars to nested fields
         if let Ok(val) = std::env::var("NODE_ID") {
             builder = builder.set_override("mls.node_id", val)?;
@@ -47,16 +46,15 @@ impl Config {
         if let Ok(val) = std::env::var("UPDATE_INTERVAL_SECS") {
             builder = builder.set_override("mls.update_interval_secs", val)?;
         }
-    
+
         // Add other mappings as needed...
         // For router section:
         if let Ok(val) = std::env::var("RX_CMD_SOCK_ADDR") {
             builder = builder.set_override("router.rx_cmd_sock_addr", val)?;
         }
-    
+
         let config = builder.build()?;
         let typed: Config = config.try_deserialize()?;
         Ok(typed)
     }
-    
 }

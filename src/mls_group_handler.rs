@@ -801,7 +801,7 @@ impl MlsGroupDiscovery for MlsEngine {
                         if self.pending_key_packages.values().any(|kp| {
                             self.id_from_key_package(kp.clone()) < Some(lowest_id_in_mls_group)
                         }) {
-                            // If any of the pending key packages have a higher ID than the lowest in our group
+                            // If any of the pending key packages have a lower ID than the lowest in our group
                             // that implies we should join that group.
                             return false;
                         }
