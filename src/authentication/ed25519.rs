@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::issuer::CredentialIssuer;
 
-const AUTHENTICATION_DIR: &str = "/valkyrie-mls/authentication";
+//const AUTHENTICATION_DIR: &str = "/valkyrie-mls/authentication";
 
 const AUTHENTICATION_DIR: &str = "authentication";
 const ONE_YEAR_IN_SECONDS: u64 = 31_556_926; // 1 year in seconds
